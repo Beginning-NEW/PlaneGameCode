@@ -6,16 +6,22 @@
   <meta name="theme-color" content="#091429">
   <title>飞机打英语</title>
   <link rel="stylesheet" href="/src/style.css">
+  <style>
+    .field:focus-visible { outline: 3px solid #ffcc6b; outline-offset: -3px; }
+    .toolbar button { min-width: 44px; min-height: 44px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  </style>
   <script type="module" src="/src/main.js"></script>
 </head>
 <body>
   <main class="shell">
     <header><div class="brand"><span class="brand-mark" aria-hidden="true">✈</span><div><p class="eyebrow">WORD PILOT · 英语练习</p><h1>飞机打英语</h1></div></div><p class="tag">边玩边记住单词</p></header>
     <section class="intro" aria-label="游戏说明"><div><p class="eyebrow">玩法说明</p><h2>看中文，击中对应的英文单词</h2><p>移动鼠标或手指控制飞机，点击或触控发射。答对得 10 分；打错或漏掉正确单词会失去 1 颗生命。</p></div><div class="keys"><span>移动 · 驾驶</span><span>点击 / 触控 · 发射</span></div></section>
-    <section class="game" aria-label="游戏区域"><div class="hud"><div class="stat"><span>当前题目</span><strong id="prompt">准备起飞</strong></div><div class="stat"><span>分数</span><strong id="score">0</strong></div><div class="stat"><span>生命</span><strong id="lives">♥ ♥ ♥</strong></div></div>
-      <div id="field" class="field" role="application" aria-label="移动飞机并射击英文单词"><div class="stars" aria-hidden="true"></div><div id="targets" class="targets"></div><div id="bullets" class="bullets"></div><div id="plane" class="plane" aria-hidden="true">▲</div><div id="feedback" class="feedback" aria-live="polite"></div>
+    <section class="game" aria-label="游戏区域"><div class="hud"><div class="stat"><span>当前题目</span><strong id="prompt">准备起飞</strong></div><div class="stat"><span>分数</span><strong id="score">0</strong></div><div class="stat"><span>生命</span><strong id="lives">3</strong></div></div>
+      <div id="field" class="field" role="application" aria-label="移动飞机并射击英文单词" aria-describedby="controls-help" aria-keyshortcuts="ArrowLeft ArrowRight a d Space" tabindex="0"><div class="stars" aria-hidden="true"></div><div id="targets" class="targets"></div><div id="bullets" class="bullets"></div><div id="plane" class="plane" aria-hidden="true">▲</div><div id="feedback" class="feedback" aria-live="polite"></div>
         <div id="overlay" class="overlay"><div class="card"><p class="eyebrow" id="overlay-kicker">准备好了吗？</p><h2 id="overlay-title">开启你的单词飞行</h2><p id="overlay-message">找到中文题目对应的英文词，瞄准并发射！</p><button id="primary" type="button">开始游戏 <span aria-hidden="true">↗</span></button></div></div>
-      </div><div class="toolbar"><p>提示：移动飞机瞄准，点击或触控即可发射</p><div><button id="pause" type="button" disabled>暂停</button><button id="restart" type="button">重新开始</button></div></div></section>
+      </div><div class="toolbar"><p id="controls-help">提示：←/→ 或 A/D 移动飞机，空格发射；点击或触控也可操作。</p><div><button id="pause" type="button" disabled>暂停</button><button id="restart" type="button">重新开始</button></div></div></section>
+    <div id="sr-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
     <footer>每一次命中，都是一次新的记忆。<span>本地词库 · 无需登录</span></footer>
   </main>
 </body>

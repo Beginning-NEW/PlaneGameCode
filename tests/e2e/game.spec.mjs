@@ -24,17 +24,48 @@ test('start, correct and incorrect hits, game over and restart', async ({ page }
   await shoot(page, true);
   await expect(page.locator('#score')).toHaveText('10', { timeout: 5000 });
   await shoot(page, false);
-  await expect(page.locator('#lives')).toHaveText('♥ ♥', { timeout: 5000 });
+  await expect(page.locator('#lives')).toHaveText('2', { timeout: 5000 });
   await page.getByRole('button', { name: '暂停' }).click();
   await expect(page.getByRole('heading', { name: '游戏已暂停' })).toBeVisible();
+  await expect(page.locator('#sr-status')).toContainText('游戏已暂停');
   await page.getByRole('button', { name: /继续游戏/ }).click();
   await expect(page.locator('#lives')).toHaveText('0', { timeout: 30000 });
   await expect(page.getByRole('heading', { name: /飞行结束/ })).toBeVisible();
   await page.getByRole('button', { name: /再玩一次/ }).click();
   await expect(page.locator('#score')).toHaveText('0');
-  await expect(page.locator('#lives')).toHaveText('♥ ♥ ♥');
+  await expect(page.locator('#lives')).toHaveText('3');
   if (testInfo.project.name === 'mobile') {
     const width = await page.evaluate(() => document.documentElement.scrollWidth);
     expect(width).toBeLessThanOrEqual(page.viewportSize().width);
+    for (const id of ['pause', 'restart']) {
+      const box = await page.locator(`#${id}`).boundingBox();
+      expect(box?.width).toBeGreaterThanOrEqual(44);
+      expect(box?.height).toBeGreaterThanOrEqual(44);
+    }
   }
+});
+
+test('keyboard controls are reachable from the game field', async ({ page }) => {
+  await page.goto('/');
+  const field = page.locator('#field');
+  await expect(field).toHaveAttribute('tabindex', '0');
+  await page.keyboard.press('Tab');
+  await expect(field).toBeFocused();
+  await expect(field).toHaveCSS('outline-width', '3px');
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: /开始游戏/ })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await field.focus();
+  const before = await page.locator('#plane').evaluate(el => el.getBoundingClientRect().left);
+  await page.keyboard.press('ArrowRight');
+  const after = await page.locator('#plane').evaluate(el => el.getBoundingClientRect().left);
+  expect(after).toBeGreaterThan(before);
+  await page.keyboard.press('Space');
+  await expect(page.locator('.bullet')).toHaveCount(1);
+  await page.getByRole('button', { name: '暂停' }).focus();
+  await page.keyboard.press('Space');
+  await expect(page.getByRole('heading', { name: '游戏已暂停' })).toBeVisible();
+  await page.getByRole('button', { name: /继续游戏/ }).focus();
+  await page.keyboard.press('Space');
+  await expect(page.getByRole('button', { name: '暂停' })).toBeVisible();
 });
