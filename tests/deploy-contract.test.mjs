@@ -20,8 +20,14 @@ test('deployment preflight is metadata-only and pins digest to the approved revi
 });
 
 test('first-release cleanup and failure rollback are scoped to plane-game state', () => {
+  const candidateOwnership = deploy.match(/candidate_owned_by_run\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  const candidateDiscovery = deploy.match(/candidate_container_for_run\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
   assert.match(deploy, /candidate_owned_by_run\(\)/);
   assert.match(deploy, /candidate_container_for_run\(\)/);
+  assert.match(candidateOwnership, /com\.plane-game\.image-digest/);
+  assert.match(candidateOwnership, /\$id \$deployment_id \$RELEASE_SHA \$IMAGE_DIGEST/);
+  assert.match(candidateDiscovery, /candidate container digest label mismatch/);
+  assert.match(candidateDiscovery, /return 1/);
   assert.match(deploy, /network_for_run\(\)/);
   assert.match(deploy, /revert_incomplete/);
   assert.match(deploy, /network_owned_by_run\(\)/);
@@ -29,6 +35,7 @@ test('first-release cleanup and failure rollback are scoped to plane-game state'
   assert.match(deploy, /docker rm -f "\$gateway_id"/);
   assert.match(deploy, /docker rm -f "\$candidate_id"/);
   assert.match(deploy, /docker network rm "\$network_id"/);
+  assert.match(deploy, /candidate_removed=false/);
   assert.match(deploy, /restore_snapshot_route/);
   assert.doesNotMatch(deploy, /docker compose down/);
   assert.match(deploy, /network_id=\$\(docker network create/);

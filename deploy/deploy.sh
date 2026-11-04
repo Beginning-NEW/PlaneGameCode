@@ -46,8 +46,8 @@ gateway_id=''
 candidate_owned_by_run() {
   local id="$1" actual
   [[ -n "$id" ]] || return 1
-  actual=$(docker container inspect --format '{{.Id}} {{ index .Config.Labels "com.plane-game.deployment-id" }} {{ index .Config.Labels "com.plane-game.release-sha" }}' "$id" 2>/dev/null || true)
-  [[ "$actual" == "$id $deployment_id $RELEASE_SHA" ]]
+  actual=$(docker container inspect --format '{{.Id}} {{ index .Config.Labels "com.plane-game.deployment-id" }} {{ index .Config.Labels "com.plane-game.release-sha" }} {{ index .Config.Labels "com.plane-game.image-digest" }}' "$id" 2>/dev/null || true)
+  [[ "$actual" == "$id $deployment_id $RELEASE_SHA $IMAGE_DIGEST" ]]
 }
 
 network_owned_by_run() {
@@ -80,12 +80,20 @@ gateway_container_for_run() {
 }
 
 candidate_container_for_run() {
-  local ids id found=''
+  local ids id found='' actual actual_id actual_deployment actual_sha actual_digest
   ids=$(docker ps -aq \
     --filter "label=com.plane-game.deployment-id=$deployment_id" \
     --filter "label=com.plane-game.release-sha=$RELEASE_SHA") || return 1
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
+    actual=$(docker container inspect --format '{{.Id}} {{ index .Config.Labels "com.plane-game.deployment-id" }} {{ index .Config.Labels "com.plane-game.release-sha" }} {{ index .Config.Labels "com.plane-game.image-digest" }}' "$id" 2>/dev/null || true)
+    read -r actual_id actual_deployment actual_sha actual_digest <<<"$actual"
+    [[ "$actual_id" == "$id" ]] || continue
+    [[ "$actual_deployment" == "$deployment_id" && "$actual_sha" == "$RELEASE_SHA" ]] || continue
+    if [[ "$actual_digest" != "$IMAGE_DIGEST" ]]; then
+      log 'candidate container digest label mismatch; preserving this run-scoped resource'
+      return 1
+    fi
     candidate_owned_by_run "$id" || continue
     [[ -z "$found" || "$found" == "$id" ]] || { log 'multiple candidate containers match this deployment id; preserving them'; return 1; }
     found="$id"
@@ -129,6 +137,7 @@ cleanup_failure() {
   if ! reconcile_candidate_id; then
     log "cleanup could not enumerate this run's candidate container"
     cleanup_incomplete=true
+    candidate_removed=false
   fi
   if ! reconcile_network_id; then
     log "cleanup could not enumerate this run's network"
