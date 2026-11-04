@@ -20,7 +20,10 @@ test('deployment preflight is metadata-only and pins digest to the approved revi
 });
 
 test('first-release cleanup and failure rollback are scoped to plane-game state', () => {
-  assert.match(deploy, /container_owned_by_run\(\)/);
+  assert.match(deploy, /candidate_owned_by_run\(\)/);
+  assert.match(deploy, /candidate_container_for_run\(\)/);
+  assert.match(deploy, /network_for_run\(\)/);
+  assert.match(deploy, /revert_incomplete/);
   assert.match(deploy, /network_owned_by_run\(\)/);
   assert.match(deploy, /gateway_container_for_run\(\)/);
   assert.match(deploy, /docker rm -f "\$gateway_id"/);

@@ -42,38 +42,133 @@ export PLANE_GAME_DEPLOYMENT_ID="$deployment_id"
 network_id=''
 candidate_id=''
 gateway_id=''
-gateway_started_by_run=false
 
-container_owned_by_run() {
+candidate_owned_by_run() {
   local id="$1" actual
   [[ -n "$id" ]] || return 1
-  actual=$(docker container inspect --format '{{.Id}} {{ index .Config.Labels "com.plane-game.deployment-id" }}' "$id" 2>/dev/null || true)
-  [[ "$actual" == "$id $deployment_id" ]]
+  actual=$(docker container inspect --format '{{.Id}} {{ index .Config.Labels "com.plane-game.deployment-id" }} {{ index .Config.Labels "com.plane-game.release-sha" }}' "$id" 2>/dev/null || true)
+  [[ "$actual" == "$id $deployment_id $RELEASE_SHA" ]]
 }
 
 network_owned_by_run() {
   local id="$1" actual
   [[ -n "$id" ]] || return 1
-  actual=$(docker network inspect --format '{{.Id}} {{ index .Labels "com.plane-game.deployment-id" }}' "$id" 2>/dev/null || true)
-  [[ "$actual" == "$id $deployment_id" ]]
+  actual=$(docker network inspect --format '{{.Id}} {{ index .Labels "com.plane-game.deployment-id" }} {{ index .Labels "com.docker.compose.project" }} {{ index .Labels "com.docker.compose.network" }}' "$id" 2>/dev/null || true)
+  [[ "$actual" == "$id $deployment_id plane-game default" ]]
+}
+
+gateway_owned_by_run() {
+  local id="$1" actual
+  [[ -n "$id" ]] || return 1
+  actual=$(docker container inspect --format '{{.Id}} {{ index .Config.Labels "com.plane-game.deployment-id" }} {{ index .Config.Labels "com.docker.compose.project" }} {{ index .Config.Labels "com.docker.compose.service" }}' "$id" 2>/dev/null || true)
+  [[ "$actual" == "$id $deployment_id plane-game gateway" ]]
 }
 
 gateway_container_for_run() {
-  docker ps -aq \
+  local ids id found=''
+  ids=$(docker ps -aq \
     --filter 'label=com.docker.compose.project=plane-game' \
     --filter 'label=com.docker.compose.service=gateway' \
-    --filter "label=com.plane-game.deployment-id=$deployment_id" | head -n 1
+    --filter "label=com.plane-game.deployment-id=$deployment_id") || return 1
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    gateway_owned_by_run "$id" || continue
+    [[ -z "$found" || "$found" == "$id" ]] || { log 'multiple gateway containers match this deployment id; preserving them'; return 1; }
+    found="$id"
+  done <<<"$ids"
+  printf '%s\n' "$found"
+}
+
+candidate_container_for_run() {
+  local ids id found=''
+  ids=$(docker ps -aq \
+    --filter "label=com.plane-game.deployment-id=$deployment_id" \
+    --filter "label=com.plane-game.release-sha=$RELEASE_SHA") || return 1
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    candidate_owned_by_run "$id" || continue
+    [[ -z "$found" || "$found" == "$id" ]] || { log 'multiple candidate containers match this deployment id; preserving them'; return 1; }
+    found="$id"
+  done <<<"$ids"
+  printf '%s\n' "$found"
+}
+
+network_for_run() {
+  local ids id found=''
+  ids=$(docker network ls -q --filter "label=com.plane-game.deployment-id=$deployment_id") || return 1
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    network_owned_by_run "$id" || continue
+    [[ -z "$found" || "$found" == "$id" ]] || { log 'multiple plane-game networks match this deployment id; preserving them'; return 1; }
+    found="$id"
+  done <<<"$ids"
+  printf '%s\n' "$found"
+}
+
+reconcile_candidate_id() {
+  candidate_owned_by_run "$candidate_id" && return 0
+  candidate_id=$(candidate_container_for_run)
+}
+
+reconcile_gateway_id() {
+  gateway_owned_by_run "$gateway_id" && return 0
+  gateway_id=$(gateway_container_for_run)
+}
+
+reconcile_network_id() {
+  network_owned_by_run "$network_id" && return 0
+  network_id=$(network_for_run)
 }
 
 cleanup_failure() {
-  local reason="$1"
-  if "$first_release" && "$gateway_started_by_run" && container_owned_by_run "$gateway_id"; then
-    docker rm -f "$gateway_id" >/dev/null 2>&1 || true
+  local reason="$1" cleanup_incomplete=false candidate_removed=true
+  if ! reconcile_gateway_id; then
+    log "cleanup could not enumerate this run's gateway container"
+    cleanup_incomplete=true
   fi
-  restore_snapshot_route
-  restore_snapshot_gateway_config
-  if container_owned_by_run "$candidate_id"; then docker rm -f "$candidate_id" >/dev/null 2>&1 || true; fi
-  if network_owned_by_run "$network_id"; then docker network rm "$network_id" >/dev/null 2>&1 || true; fi
+  if ! reconcile_candidate_id; then
+    log "cleanup could not enumerate this run's candidate container"
+    cleanup_incomplete=true
+  fi
+  if ! reconcile_network_id; then
+    log "cleanup could not enumerate this run's network"
+    cleanup_incomplete=true
+  fi
+
+  if "$first_release" && [[ -n "$gateway_id" ]]; then
+    if ! gateway_owned_by_run "$gateway_id" || ! docker rm -f "$gateway_id" >/dev/null 2>&1; then
+      log "cleanup could not remove this run's gateway container"
+      cleanup_incomplete=true
+    fi
+  fi
+  if [[ -n "$candidate_id" ]]; then
+    if ! candidate_owned_by_run "$candidate_id" || ! docker rm -f "$candidate_id" >/dev/null 2>&1; then
+      log "cleanup could not remove this run's candidate container"
+      cleanup_incomplete=true
+      candidate_removed=false
+    fi
+  fi
+  if [[ -n "$network_id" ]]; then
+    if ! "$candidate_removed"; then
+      log "cleanup will not remove this run's network while its candidate container remains"
+      cleanup_incomplete=true
+    elif ! network_owned_by_run "$network_id" || ! docker network rm "$network_id" >/dev/null 2>&1; then
+      log "cleanup could not remove this run's network"
+      cleanup_incomplete=true
+    fi
+  fi
+  if ! restore_snapshot_route; then
+    log 'cleanup could not restore the route snapshot'
+    cleanup_incomplete=true
+  fi
+  if ! restore_snapshot_gateway_config; then
+    log 'cleanup could not restore the gateway configuration snapshot'
+    cleanup_incomplete=true
+  fi
+  if "$cleanup_incomplete"; then
+    record_snapshot_outcome 'revert_incomplete' "$reason" || true
+    die "$reason; cleanup is incomplete for deployment-id=$deployment_id; inspect only this run's plane-game resources"
+  fi
   record_snapshot_outcome 'reverted' "$reason"
   die "$reason; candidate and this run's plane-game route/resources were reverted"
 }
@@ -95,7 +190,7 @@ if ! candidate_id=$(docker run -d --name "$container" --network plane-game_defau
   "$(image_ref)"); then
   cleanup_failure 'candidate container failed to start'
 fi
-container_owned_by_run "$candidate_id" || cleanup_failure 'candidate container ownership verification failed'
+candidate_owned_by_run "$candidate_id" || cleanup_failure 'candidate container ownership verification failed'
 
 wait_healthy "$container" || cleanup_failure 'candidate container did not become healthy'
 verify_candidate_version "$container" || cleanup_failure 'candidate version.json does not match approved SHA'
@@ -106,13 +201,10 @@ if "$first_release"; then
     cleanup_failure 'gateway container already exists; refusing to adopt or remove it during first deployment'
   fi
   if ! docker compose up -d gateway >/dev/null; then
-    gateway_id=$(gateway_container_for_run || true)
-    if container_owned_by_run "$gateway_id"; then gateway_started_by_run=true; fi
     cleanup_failure 'gateway failed to start for first release'
   fi
-  gateway_id=$(gateway_container_for_run || true)
-  container_owned_by_run "$gateway_id" || cleanup_failure 'gateway ownership verification failed'
-  gateway_started_by_run=true
+  gateway_id=$(gateway_container_for_run)
+  gateway_owned_by_run "$gateway_id" || cleanup_failure 'gateway ownership verification failed'
 fi
 
 switch_to "$RELEASE_SHA" || cleanup_failure 'route switch verification failed'
