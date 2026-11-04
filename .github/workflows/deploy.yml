@@ -1,0 +1,60 @@
+name: Controlled deployment
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.20.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint && pnpm format --check && pnpm test && pnpm build
+      - run: pnpm exec playwright install --with-deps chromium && pnpm test:e2e
+      - name: Verify dispatch commit is protected main HEAD
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Build and push immutable SHA image
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker build --build-arg "GIT_SHA=${GITHUB_SHA}" -t "$repo:$GITHUB_SHA" .
+          cid=$(docker run -d -p 127.0.0.1:0:8080 "$repo:$GITHUB_SHA")
+          trap 'docker rm -f "$cid"' EXIT
+          for n in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy ] && break
+            sleep 1
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy
+          test "$(docker exec "$cid" wget -q -O - http://127.0.0.1:8080/version.json)" = "{\"sha\":\"$GITHUB_SHA\"}"
+          docker push "$repo:$GITHUB_SHA"
+      - name: Deploy through audited restricted account
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+        run: |
+          test -n "$DEPLOY_PORT" && test -n "$KNOWN_HOSTS" && test -n "$SSH_KEY"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GHCR_READ_TOKEN" | ssh -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" "docker login ghcr.io -u '$GITHUB_ACTOR' --password-stdin" >/dev/null
+          ssh -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" "docker pull '$repo:$GITHUB_SHA' && cd plane-game && ./deploy/deploy.sh '$GITHUB_SHA' '$repo' '$DEPLOY_PORT'"
+          echo "deployed_sha=$GITHUB_SHA deployed_at=$(date -u +%FT%TZ) health=passed" >> "$GITHUB_STEP_SUMMARY"
