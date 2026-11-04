@@ -20,6 +20,9 @@ if "$dry_run"; then
 fi
 
 mkdir -p "$ACTIVE_DIR" "$RELEASES_DIR" "$SNAPSHOTS_DIR"
+command -v flock >/dev/null || die 'flock is required to serialize deployments'
+exec 9>"$RUNTIME_DIR/.deploy.lock"
+flock -n 9 || die 'another PlaneGame deployment is already running'
 old_sha=''
 [[ -f "$RUNTIME_DIR/active_sha" ]] && old_sha=$(<"$RUNTIME_DIR/active_sha")
 if [[ -n "$old_sha" ]]; then
@@ -34,42 +37,82 @@ first_release=false
 snapshot_deployment_state "$RELEASE_SHA"
 
 container="plane-game-$RELEASE_SHA"
-candidate_started=false
-network_created=false
+deployment_id="${RELEASE_SHA:0:12}-$(date -u +%Y%m%dT%H%M%S)-$$"
+export PLANE_GAME_DEPLOYMENT_ID="$deployment_id"
+network_id=''
+candidate_id=''
+gateway_id=''
 gateway_started_by_run=false
+
+container_owned_by_run() {
+  local id="$1" actual
+  [[ -n "$id" ]] || return 1
+  actual=$(docker container inspect --format '{{.Id}} {{ index .Config.Labels "com.plane-game.deployment-id" }}' "$id" 2>/dev/null || true)
+  [[ "$actual" == "$id $deployment_id" ]]
+}
+
+network_owned_by_run() {
+  local id="$1" actual
+  [[ -n "$id" ]] || return 1
+  actual=$(docker network inspect --format '{{.Id}} {{ index .Labels "com.plane-game.deployment-id" }}' "$id" 2>/dev/null || true)
+  [[ "$actual" == "$id $deployment_id" ]]
+}
+
+gateway_container_for_run() {
+  docker ps -aq \
+    --filter 'label=com.docker.compose.project=plane-game' \
+    --filter 'label=com.docker.compose.service=gateway' \
+    --filter "label=com.plane-game.deployment-id=$deployment_id" | head -n 1
+}
 
 cleanup_failure() {
   local reason="$1"
-  if "$first_release" && "$gateway_started_by_run"; then
-    docker compose rm -sf gateway >/dev/null 2>&1 || true
+  if "$first_release" && "$gateway_started_by_run" && container_owned_by_run "$gateway_id"; then
+    docker rm -f "$gateway_id" >/dev/null 2>&1 || true
   fi
   restore_snapshot_route
   restore_snapshot_gateway_config
-  if "$candidate_started"; then docker rm -f "$container" >/dev/null 2>&1 || true; fi
-  if "$network_created"; then docker network rm plane-game_default >/dev/null 2>&1 || true; fi
+  if container_owned_by_run "$candidate_id"; then docker rm -f "$candidate_id" >/dev/null 2>&1 || true; fi
+  if network_owned_by_run "$network_id"; then docker network rm "$network_id" >/dev/null 2>&1 || true; fi
   record_snapshot_outcome 'reverted' "$reason"
   die "$reason; candidate and this run's plane-game route/resources were reverted"
 }
 
 if docker container inspect "$container" >/dev/null 2>&1; then die 'candidate container name already in use'; fi
 if ! docker network inspect plane-game_default >/dev/null 2>&1; then
-  docker network create --label com.docker.compose.project=plane-game --label com.docker.compose.network=default plane-game_default >/dev/null
-  network_created=true
+  if ! network_id=$(docker network create \
+    --label com.docker.compose.project=plane-game \
+    --label com.docker.compose.network=default \
+    --label "com.plane-game.deployment-id=$deployment_id" \
+    plane-game_default); then
+    cleanup_failure 'plane-game network failed to start'
+  fi
+  network_owned_by_run "$network_id" || cleanup_failure 'created plane-game network ownership verification failed'
 fi
-docker run -d --name "$container" --network plane-game_default --restart unless-stopped \
+if ! candidate_id=$(docker run -d --name "$container" --network plane-game_default --restart unless-stopped \
   --label "com.plane-game.release-sha=$RELEASE_SHA" --label "com.plane-game.image-digest=$IMAGE_DIGEST" \
-  "$(image_ref)" >/dev/null
-candidate_started=true
+  --label "com.plane-game.deployment-id=$deployment_id" \
+  "$(image_ref)"); then
+  cleanup_failure 'candidate container failed to start'
+fi
+container_owned_by_run "$candidate_id" || cleanup_failure 'candidate container ownership verification failed'
 
 wait_healthy "$container" || cleanup_failure 'candidate container did not become healthy'
 verify_candidate_version "$container" || cleanup_failure 'candidate version.json does not match approved SHA'
 
 if "$first_release"; then
   write_route "$RELEASE_SHA"
-  if [[ -z "$(gateway_container)" ]]; then
-    docker compose up -d gateway >/dev/null || cleanup_failure 'gateway failed to start for first release'
-    gateway_started_by_run=true
+  if [[ -n "$(gateway_container_any_state)" ]]; then
+    cleanup_failure 'gateway container already exists; refusing to adopt or remove it during first deployment'
   fi
+  if ! docker compose up -d gateway >/dev/null; then
+    gateway_id=$(gateway_container_for_run || true)
+    if container_owned_by_run "$gateway_id"; then gateway_started_by_run=true; fi
+    cleanup_failure 'gateway failed to start for first release'
+  fi
+  gateway_id=$(gateway_container_for_run || true)
+  container_owned_by_run "$gateway_id" || cleanup_failure 'gateway ownership verification failed'
+  gateway_started_by_run=true
 fi
 
 switch_to "$RELEASE_SHA" || cleanup_failure 'route switch verification failed'

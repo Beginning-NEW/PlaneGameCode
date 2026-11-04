@@ -3,6 +3,8 @@ services:
   gateway:
     image: nginxinc/nginx-unprivileged:1.29-alpine
     restart: unless-stopped
+    labels:
+      com.plane-game.deployment-id: "${PLANE_GAME_DEPLOYMENT_ID:-manual}"
     ports:
       - "127.0.0.1:${APP_PORT:?Select an audited free host port}:8080"
     volumes:

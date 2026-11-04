@@ -31,6 +31,10 @@ gateway_container() {
   docker compose ps -q gateway | head -n 1
 }
 
+gateway_container_any_state() {
+  docker compose ps -aq gateway | head -n 1
+}
+
 port_is_available() {
   ! (echo >/dev/tcp/127.0.0.1/"$APP_PORT") 2>/dev/null
 }
@@ -212,6 +216,7 @@ preflight_readonly() {
     [[ "$health" == healthy ]] || die 'current gateway is not healthy; use rollback or diagnose before an update'
     curl -fsS --max-time 3 "http://127.0.0.1:$APP_PORT/healthz" >/dev/null || die 'current route health check failed preflight'
   else
+    [[ -z "$(gateway_container_any_state)" ]] || die 'gateway container exists but is stopped; diagnose it before a first deployment'
     port_is_available || die 'audited host port is occupied'
   fi
 }
