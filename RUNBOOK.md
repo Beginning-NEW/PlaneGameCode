@@ -4,11 +4,37 @@
 
 单服务静态页面由非特权 Nginx 容器提供，专用 Compose 网关仅绑定经审计的 `127.0.0.1:APP_PORT`。网关把流量转给 `plane-game-<完整 SHA>` 容器；候选和上一健康版本可并存。既有生产 Nginx、根域、www、DNS、证书都不由这些脚本修改。单服务的 GitHub Actions、Compose、Nginx 和健康检查满足演练范围，无需 K8s/Jenkins/Nacos/Apollo。
 
-## 预备与发布
+## 发布前门禁与不可变候选
 
-Operations Lead 先审计端口、现有容器及 Nginx 配置，并获得受保护部署环境的授权；在目标机放置此仓库经审查的版本，准备 Docker Engine、Compose、curl、Bash 和可拉取的不可变 `IMAGE_REPOSITORY:SHA`。只通过受控凭据通道配置 `DEPLOY_*`、`GHCR_READ_TOKEN` 等；仓库不保存值。GitHub Actions `Checks` 面向 PR/main；`Controlled deployment` 仅对 main 上显式手动触发，须经 `production` 环境保护规则批准。先审核 checks 和 QA 结论，部署工作流在受控账户拉取 SHA 镜像并运行部署脚本。
+Operations Lead 先做目标服务器的只读审计：端口、现有容器、专属 Nginx 配置与 `www` 基线；`APP_PORT` 只能使用这份审计中记录的空闲 `127.0.0.1` 端口，不能从开发机或猜测值取得。在目标机放置经审查的仓库版本，并准备 Docker Engine、Compose、curl、Bash、`sha256sum` 和已拉取的不可变镜像。只通过受控凭据通道配置 `DEPLOY_*`、`GHCR_READ_TOKEN` 等；仓库不保存值。
 
-手动预检：`./deploy/deploy.sh --dry-run FULL_SHA IMAGE_REPOSITORY APP_PORT`。预检核对 40 位 SHA、仓库名、端口范围及占用、Docker 镜像、Compose 和应用/网关 Nginx 配置、当前路由的 `/healthz`；不切换流量。正式命令去掉 `--dry-run`。先启动候选容器并等待 Docker 健康状态，通过后校验网关配置并重载；失败恢复原路由。脚本记录 `runtime/active_sha` 和 `runtime/previous_healthy_sha`；留存上一个健康容器，待下一次部署或回滚确认后按运维保留政策清理旧容器。
+同一候选必须先由 QA 以完整 Git SHA 和镜像 digest 签署，再由 Operations Lead 复审服务器审计和演练记录；两项结论齐备前，CEO 不得批准公开切换。GitHub Actions `Checks` 面向 PR/main；`Controlled deployment` 仅对 main 上显式手动触发，须经 `production` 环境保护规则批准。
+
+发布输入是四个显式值：
+
+```text
+FULL_SHA IMAGE_REPOSITORY APPROVED_IMAGE_DIGEST AUDITED_LOOPBACK_PORT
+```
+
+`APPROVED_IMAGE_DIGEST` 必须是 `sha256:<64-hex>`。脚本只接受 `IMAGE_REPOSITORY@APPROVED_IMAGE_DIGEST`，并验证其 OCI `org.opencontainers.image.revision` 标签等于 `FULL_SHA`；仅有可变的 `:SHA` 标签不足以通过检查。部署工作流在推送后解析 manifest digest，拉取该 digest，再把同一组值传给部署脚本。
+
+## 只读预检与发布
+
+手动只读预检：
+
+```bash
+./deploy/deploy.sh --dry-run FULL_SHA IMAGE_REPOSITORY APPROVED_IMAGE_DIGEST AUDITED_LOOPBACK_PORT
+```
+
+预检检查参数、Docker daemon、Compose 语法、已在本机的 immutable image digest + revision label，以及已存在网关的 Docker 健康状态和本地 `GET /healthz`。没有网关时只检查经审计端口是否可用。它**不会** pull/run/start/stop/remove/reload/rename 容器，不创建网络，也不写 `runtime/` 或部署配置；因此不会替代实际容器或网关演练。网关 Nginx 语法在实际切换前通过现有专属 gateway 容器的 `nginx -t` 验证。
+
+正式命令去掉 `--dry-run`。候选以 digest 启动、等待 Docker 健康状态，并校验容器内 `version.json` 的 SHA 后才写专属路由。每次成功发布写入：
+
+- `runtime/releases/<SHA>/release.env`：SHA、镜像仓库/digest、配置 revision、gateway 配置 digest、健康状态和时间；
+- `runtime/releases/<SHA>/gateway.conf`：可验证的上一健康 gateway 配置；
+- `runtime/deployment-snapshots/<UTC>-<SHA>/state.env`：部署前路由/config 快照、结果和时间。
+
+首次发布没有 `previous_healthy_sha` 时，如果 gateway 启动或切换校验失败，脚本只删除本轮 `plane-game-<SHA>` 容器、必要时删除本轮创建的 `plane-game_default` 网络和 gateway，并撤销本轮专属 `runtime/active/upstream.inc`。它不会恢复空 upstream，也不会操作 www、根域、其他 Nginx server block 或其他 Compose 项目。
 
 ## 健康、日志与故障
 
@@ -16,9 +42,27 @@ Operations Lead 先审计端口、现有容器及 Nginx 配置，并获得受保
 - `docker compose ps`、`docker inspect -f '{{.State.Health.Status}}' plane-game-FULL_SHA` 查看状态；`docker compose logs --tail=100 gateway`、`docker logs --tail=100 plane-game-FULL_SHA` 查看日志。启动事件记录端口和版本；Nginx access/error 可由容器日志查看。
 - 真实生产需由 Operations Lead 单独验证子域解析、TLS、专属 Nginx `nginx -t`、证书续期 `certbot certificates` 和前后 www 探针。异常时立即停止本应用变更，通知 CTO 与 Operations Lead；现有域名和服务不由本脚本操作。
 
-## 回滚
+## 故障回滚
 
-读取 `runtime/previous_healthy_sha`，确认其与运维记录一致，然后执行 `./deploy/rollback.sh --dry-run previous_healthy_sha APP_PORT`；通过后执行 `./deploy/rollback.sh previous_healthy_sha APP_PORT`。脚本只接受明确的上一健康 SHA，并在切换前验证当前健康、上一容器健康和 Compose 语法；切换失败会恢复原路由。记录操作者、UTC 起止时间、两端 SHA、触发原因、`/healthz` 与首页结果、恢复耗时、www 前后探针；若上一容器不健康则不切换，升级给 Operations Lead/CTO。证书续期和生产网关配置由单独运维任务负责。
+读取 `runtime/previous_healthy_sha`，确认其与发布记录一致，然后执行：
+
+```bash
+./deploy/rollback.sh --dry-run PREVIOUS_HEALTHY_SHA AUDITED_LOOPBACK_PORT
+./deploy/rollback.sh PREVIOUS_HEALTHY_SHA AUDITED_LOOPBACK_PORT
+```
+
+回滚**不要求当前版本健康**：当前故障正是触发条件。它要求并验证上一健康版本的 release record、镜像 digest/revision label、保存的 gateway 配置 digest、上一容器健康和 `version.json`；只有这些真实存在才会恢复保存的专属 gateway 配置并切换路由。任一校验或切换失败都会恢复本次操作前的专属 route/config，不触及其他服务。成功输出包含起止 SHA、digest、配置 revision、健康状态、UTC 时间与 `duration_seconds`。
+
+记录操作者、触发原因、命令输出、`/healthz`、首页、两端 SHA/digest/config revision 和恢复耗时；由 Operations Lead 单独完成 www 前后只读探针。若上一容器或其记录不健康，保持现状并升级给 Operations Lead/CTO。证书续期和生产站点配置由单独运维任务负责。
+
+## 非生产演练记录
+
+在隔离的 Docker 主机/目录中，用与 QA 签署相同的 SHA + digest 依次记录以下两条命令及完整输出：
+
+1. 首发故障：让候选在健康或 route 校验阶段失败；确认 `runtime/deployment-snapshots/.../state.env` 是 `outcome=reverted`，`runtime/active/upstream.inc` 不存在（若部署前不存在），本轮容器、gateway 和本轮网络均已删除。
+2. 更新故障回退：保留一个真实 `previous_healthy_sha` 的健康容器和 release record，使当前版本的应用健康检查失败；执行回滚并确认输出的 `previous_health=healthy`、`duration_seconds`、回退后的 `/healthz`/`version.json`，以及保存的 gateway config digest。
+
+演练记录必须包含 SHA、digest、配置 revision、健康状态、回滚耗时和 `docker compose ps`；不把预检输出误称为演练。任何实际服务器操作仍只限本应用 Docker/回环端口/专属站点，且在 CEO Go/No-Go 前不得公开切换。
 
 ## 当前限制
 

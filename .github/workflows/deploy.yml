@@ -39,6 +39,9 @@ jobs:
           test "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy
           test "$(docker exec "$cid" wget -q -O - http://127.0.0.1:8080/version.json)" = "{\"sha\":\"$GITHUB_SHA\"}"
           docker push "$repo:$GITHUB_SHA"
+          digest="$(docker buildx imagetools inspect "$repo:$GITHUB_SHA" --format '{{.Manifest.Digest}}')"
+          test "$digest" != "${digest#sha256:}"
+          echo "image_digest=$digest" >> "$GITHUB_ENV"
       - name: Deploy through audited restricted account
         env:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -56,5 +59,5 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           repo="ghcr.io/${GITHUB_REPOSITORY,,}"
           printf '%s' "$GHCR_READ_TOKEN" | ssh -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" "docker login ghcr.io -u '$GITHUB_ACTOR' --password-stdin" >/dev/null
-          ssh -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" "docker pull '$repo:$GITHUB_SHA' && cd plane-game && ./deploy/deploy.sh '$GITHUB_SHA' '$repo' '$DEPLOY_PORT'"
-          echo "deployed_sha=$GITHUB_SHA deployed_at=$(date -u +%FT%TZ) health=passed" >> "$GITHUB_STEP_SUMMARY"
+          ssh -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" "docker pull '$repo@$image_digest' && cd plane-game && ./deploy/deploy.sh '$GITHUB_SHA' '$repo' '$image_digest' '$DEPLOY_PORT'"
+          echo "deployed_sha=$GITHUB_SHA image_digest=$image_digest deployed_at=$(date -u +%FT%TZ) health=passed" >> "$GITHUB_STEP_SUMMARY"
