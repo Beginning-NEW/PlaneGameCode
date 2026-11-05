@@ -70,11 +70,15 @@ jobs:
         env:
           VERIFIED_SHA: ${{ steps.revision.outputs.sha }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_BASE_IMAGE: ${{ vars.NODE_BASE_IMAGE }}
+          NGINX_BASE_IMAGE: ${{ vars.NGINX_BASE_IMAGE }}
         run: |
           set -euo pipefail
           repo="ghcr.io/${GITHUB_REPOSITORY,,}"
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker build --build-arg "GIT_SHA=$VERIFIED_SHA" -t "$repo:$VERIFIED_SHA" .
+          [[ "$NODE_BASE_IMAGE" =~ ^node:24-alpine@sha256:[0-9a-f]{64}$ ]]
+          [[ "$NGINX_BASE_IMAGE" =~ ^nginxinc/nginx-unprivileged:1[.]29-alpine@sha256:[0-9a-f]{64}$ ]]
+          docker build --platform linux/amd64 --build-arg "NODE_BASE_IMAGE=$NODE_BASE_IMAGE" --build-arg "NGINX_BASE_IMAGE=$NGINX_BASE_IMAGE" --build-arg "GIT_SHA=$VERIFIED_SHA" -t "$repo:$VERIFIED_SHA" .
           cid=$(docker run -d -p 127.0.0.1:0:8080 "$repo:$VERIFIED_SHA")
           trap 'docker rm -f "$cid" >/dev/null' EXIT
           for n in $(seq 1 30); do

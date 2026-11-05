@@ -67,6 +67,8 @@ test('automatic release is gated on successful push CI and transports matching s
   assert.match(workflow, /sha256sum -c -/);
   assert.match(workflow, /StrictHostKeyChecking=yes/);
   assert.match(workflow, /environment: production/);
+  assert.match(workflow, /NODE_BASE_IMAGE: \$\{\{ vars[.]NODE_BASE_IMAGE \}\}/);
+  assert.match(workflow, /docker build --platform linux\/amd64 --build-arg "NODE_BASE_IMAGE=\$NODE_BASE_IMAGE"/);
   assert.match(workflow, /DOCKER_HOST=unix:\/\/\/run\/user/);
   assert.match(promote, /grep -q rootless/);
   assert.match(promote, /last_run_number/);

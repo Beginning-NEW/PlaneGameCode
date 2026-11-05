@@ -108,3 +108,10 @@ To finish acceptance, capture the real Actions run URL, SHA, immutable digest,
 host and public before/after checks, failure drill and recovery records for the
 same approved candidate. Local tests and this runbook do not substitute for
 an actual production-environment review or host exercise.
+
+The build job also requires repository variables `NODE_BASE_IMAGE` and
+`NGINX_BASE_IMAGE` with independently reviewed sha256 digests for the
+specified Node and Nginx image tags. It builds the fixed linux/amd64 platform
+from those digests and refuses to publish if either pin is missing. Local
+development and the earlier CI smoke still use the Dockerfile tag defaults;
+production release builds always supply immutable base image references.
