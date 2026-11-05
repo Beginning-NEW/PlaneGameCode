@@ -1,0 +1,40 @@
+name: Checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.20.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm format --check
+      - run: pnpm test
+      - run: bash -n deploy/common.sh deploy/deploy.sh deploy/rollback.sh deploy/plane-preflight
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - name: Container and health smoke
+        run: |
+          docker build --build-arg "GIT_SHA=${GITHUB_SHA}" -t "plane-game:${GITHUB_SHA}" .
+          cid=$(docker run -d -p 127.0.0.1:0:8080 "plane-game:${GITHUB_SHA}")
+          trap 'docker rm -f "$cid"' EXIT
+          for n in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy ] && break
+            sleep 1
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy
+          port=$(docker port "$cid" 8080/tcp | sed 's/.*://')
+          curl --fail --show-error "http://127.0.0.1:${port}/healthz"

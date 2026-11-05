@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Read-only host gate, streamed from the checksum-verified release archive before transfer or pull.
+set -euo pipefail
+export LC_ALL=C
+fail() { printf 'plane-preflight: %s\n' "$*" >&2; exit 1; }
+
+[[ "$(id -un)" == plane-preflight ]] || fail 'SSH account must be plane-preflight'
+uid=$(id -u)
+[[ "$uid" =~ ^[1-9][0-9]*$ ]] || fail 'root UID is forbidden'
+[[ "$HOME" == "$(getent passwd plane-preflight | cut -d: -f6)" ]] || fail 'SSH home does not match the dedicated account'
+
+for group in $(id -nG); do
+  case "$group" in docker|sudo|wheel|admin) fail "privileged group membership: $group" ;; esac
+done
+if command -v sudo >/dev/null 2>&1; then
+  sudo_message=$(sudo -n -l 2>&1) && fail 'sudo entitlement exists'
+  case "$sudo_message" in
+    *'not in the sudoers file'*|*'not allowed to run sudo'*|*'not permitted to run sudo'*) ;;
+    *) fail 'cannot prove absence of sudo entitlement' ;;
+  esac
+fi
+
+socket="/run/user/$uid/docker.sock"
+[[ "${XDG_RUNTIME_DIR:-/run/user/$uid}" == "/run/user/$uid" ]] || fail 'runtime directory belongs to another user'
+[[ -z "${DOCKER_CONTEXT:-}" ]] || fail 'Docker context override is forbidden'
+[[ -z "${DOCKER_HOST:-}" || "$DOCKER_HOST" == "unix://$socket" ]] || fail 'Docker host override is not the rootless socket'
+[[ ! -S /var/run/docker.sock || ! -w /var/run/docker.sock ]] || fail 'rootful Docker socket is accessible'
+[[ -S "$socket" && -O "$socket" && -w "$socket" ]] || fail 'the same user must own and access its rootless Docker socket'
+command -v docker >/dev/null 2>&1 || fail 'Docker CLI is missing'
+security=$(docker --host "unix://$socket" info --format '{{json .SecurityOptions}}') || fail 'rootless Docker socket is unavailable'
+[[ "$security" == *rootless* ]] || fail 'Docker daemon is not rootless'
+printf 'plane-preflight: passed user=%s uid=%s socket=%s\n' "$(id -un)" "$uid" "$socket"
