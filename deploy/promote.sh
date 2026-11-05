@@ -45,25 +45,40 @@ failed() {
   code="$?"
   trap - EXIT
   if [[ "$code" -eq 0 ]]; then return; fi
-  restore_source || echo 'ALERT: source restoration incomplete' >&2
+  recovery=restored
+  restore_source || { echo 'ALERT: source restoration incomplete' >&2; recovery=incomplete; }
   if [[ -n "$old_sha" ]]; then
     gateway=$(docker compose -p plane-game ps -q gateway 2>/dev/null || true)
     if [[ -z "$gateway" ]] || ! docker exec "$gateway" nginx -t >/dev/null 2>&1 ||
        ! docker exec "$gateway" nginx -s reload >/dev/null 2>&1; then
       echo 'ALERT: previous gateway configuration could not be restored' >&2
+      recovery=incomplete
     fi
     if [[ -f "$PLANE_GAME_RUNTIME_DIR/active_sha" && $(<"$PLANE_GAME_RUNTIME_DIR/active_sha") != "$old_sha" ]]; then
       # A post-check failure must recover the recorded previous release.
-      PLANE_GAME_RUNTIME_DIR="$PLANE_GAME_RUNTIME_DIR" bash "$root/deploy/rollback.sh" "$old_sha" "$port" || echo 'ALERT: automatic rollback incomplete' >&2
+      PLANE_GAME_RUNTIME_DIR="$PLANE_GAME_RUNTIME_DIR" bash "$root/deploy/rollback.sh" "$old_sha" "$port" ||
+        { echo 'ALERT: automatic rollback incomplete' >&2; recovery=incomplete; }
     fi
     if ! curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null ||
        [[ "$(curl -fsS "http://127.0.0.1:$port/version.json" 2>/dev/null)" != "{\"sha\":\"$old_sha\"}" ]]; then
       echo 'ALERT: prior healthy route not restored; investigate immediately' >&2
+      recovery=incomplete
     fi
   else
-    [[ ! -f "$PLANE_GAME_RUNTIME_DIR/active_sha" ]] || echo 'ALERT: first release left an active route; investigate immediately' >&2
+    recovery=first_reverted
+    if [[ -f "$PLANE_GAME_RUNTIME_DIR/active_sha" ]]; then
+      echo 'ALERT: first release left an active route; investigate immediately' >&2
+      recovery=incomplete
+    fi
   fi
-  printf 'sha=%s digest=%s time=%s health=failed recovery=inspect\n' "$sha" "$digest" "$(date -u +%FT%TZ)" >&2
+  for record in "$PLANE_GAME_RUNTIME_DIR"/deployment-snapshots/*-"$sha"/state.env; do
+    [[ -f "$record" ]] || continue
+    if grep -q '^outcome=revert_incomplete$' "$record"; then
+      echo 'ALERT: run-scoped resource cleanup is incomplete' >&2
+      recovery=incomplete
+    fi
+  done
+  printf 'sha=%s digest=%s time=%s health=failed recovery=%s\n' "$sha" "$digest" "$(date -u +%FT%TZ)" "$recovery" >&2
 }
 trap failed EXIT
 cp "$stage/compose.yaml" "$root/compose.yaml"
