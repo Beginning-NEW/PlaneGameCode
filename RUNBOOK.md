@@ -67,3 +67,44 @@ FULL_SHA IMAGE_REPOSITORY APPROVED_IMAGE_DIGEST AUDITED_LOOPBACK_PORT
 ## 当前限制
 
 离线候选不代表上线：还需真实 CI、授权、独立 QA/首用验收、运维基线、DNS/TLS、专属站点、真实部署与回滚证据。告警入口为受控部署环境的工作流失败和 Operations Lead 的容器健康巡检；密钥仅在 GitHub Environment 和 Paperclip Secrets 管理，必要时按运维账户流程轮换。
+
+## Automatic CD (pending production verification)
+
+A successful `Checks` **push to protected main** starts `Controlled deployment` through
+`workflow_run`. Failed CI and pull-request checks do not build or publish a release.
+The build job rechecks the exact main commit, runs the project checks and browser
+tests, builds a container for the full commit SHA, checks container health,
+homepage and the exact `version.json` SHA, pushes the image to GHCR and records
+its immutable digest. It archives `compose.yaml` and `deploy/` from that SHA.
+The production job waits for the GitHub `production` environment reviewers,
+rechecks the current main SHA, verifies the archived checksum locally and on the
+host, and passes SHA, digest, port and GitHub run number to the remote promoter.
+
+Operations must configure `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`,
+`DEPLOY_KNOWN_HOSTS`, `GHCR_READ_TOKEN` as production environment secrets, and `GHCR_READ_USER` as a production variable, and
+`DEPLOY_PORT` as a production variable after independent host preflight.
+`DEPLOY_KNOWN_HOSTS` must be a pinned, independently verified host key, never
+a fresh `ssh-keyscan` result obtained in the workflow. The dedicated deploy user
+must have its own rootless Docker daemon at
+`/run/user/$(id -u)/docker.sock`; rootful Docker, root login and free choice
+of host port are rejected. The only application listener is the audited
+`127.0.0.1:DEPLOY_PORT`. Production Nginx, DNS and TLS remain Operations work.
+Keep environment review and the first public cutover gated by CEO approval; an
+automatic workflow trigger does not mean an unattended public release.
+
+The remote account uses `$HOME/plane-game` as its dedicated application root.
+It verifies the source archive checksum before extraction, saves the previous
+source, rejects older GitHub run numbers, applies this commit's Compose and
+scripts, and calls `deploy.sh`. The deployment verifies rootless digest binding,
+container health, the loopback `/healthz`, homepage and exact `version.json`
+before recording a healthy release. On failure it restores the previous source
+and validates the previous route; incomplete recovery emits `ALERT` and fails
+the Actions job. First-release failures use resource ownership labels to remove
+only this application's new containers, network and route. The local run marker
+does not decrease on rollback. A failed Actions run must be investigated by
+Operations and the CTO before another release.
+
+To finish acceptance, capture the real Actions run URL, SHA, immutable digest,
+host and public before/after checks, failure drill and recovery records for the
+same approved candidate. Local tests and this runbook do not substitute for
+an actual production-environment review or host exercise.

@@ -174,6 +174,19 @@ cleanup_failure() {
     log 'cleanup could not restore the gateway configuration snapshot'
     cleanup_incomplete=true
   fi
+  if [[ -n "$old_sha" ]]; then
+    local gateway
+    gateway=$(gateway_container)
+    if [[ -z "$gateway" ]] || ! docker exec "$gateway" nginx -t >/dev/null 2>&1 ||
+      ! docker exec "$gateway" nginx -s reload >/dev/null 2>&1 ||
+      ! verify_gateway_route "$old_sha"; then
+      log 'ALERT: previous healthy route could not be verified after recovery'
+      cleanup_incomplete=true
+    fi
+  elif [[ -f "$ACTIVE_UPSTREAM" ]]; then
+    log 'ALERT: first release left an active route'
+    cleanup_incomplete=true
+  fi
   if "$cleanup_incomplete"; then
     record_snapshot_outcome 'revert_incomplete' "$reason" || true
     die "$reason; cleanup is incomplete for deployment-id=$deployment_id; inspect only this run's plane-game resources"

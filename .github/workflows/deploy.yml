@@ -1,16 +1,52 @@
 name: Controlled deployment
 on:
-  workflow_dispatch:
+  workflow_run:
+    workflows: [Checks]
+    types: [completed]
+    branches: [main]
 permissions:
   contents: read
-  packages: write
+concurrency:
+  group: plane-game-production
+  cancel-in-progress: false
 jobs:
-  deploy:
-    if: github.ref == 'refs/heads/main'
+  build:
+    if: >-
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
-    environment: production
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      sha: ${{ steps.revision.outputs.sha }}
+      image_digest: ${{ steps.image.outputs.digest }}
+      archive_digest: ${{ steps.archive.outputs.digest }}
     steps:
+      - name: Select the verified main commit
+        id: revision
+        env:
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          sha="${VERIFIED_SHA:-$GITHUB_SHA}"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.revision.outputs.sha }}
+          persist-credentials: false
+      - name: Reject superseded or unverified commit
+        env:
+          VERIFIED_SHA: ${{ steps.revision.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$VERIFIED_SHA"
+          main_sha=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$GITHUB_REPOSITORY/git/ref/heads/main" | jq -r .object.sha)
+          test "$main_sha" = "$VERIFIED_SHA"
       - uses: pnpm/action-setup@v4
         with:
           version: 10.20.0
@@ -18,46 +54,113 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint && pnpm format --check && pnpm test && pnpm build
-      - run: pnpm exec playwright install --with-deps chromium && pnpm test:e2e
-      - name: Verify dispatch commit is protected main HEAD
-        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-      - name: Build and push immutable SHA image
+      - name: Rebuild and verify the accepted revision
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm lint
+          pnpm format --check
+          pnpm test
+          bash -n deploy/*.sh
+          pnpm build
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:e2e
+      - name: Build, smoke, and push by immutable digest
+        id: image
         env:
+          VERIFIED_SHA: ${{ steps.revision.outputs.sha }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          set -euo pipefail
           repo="ghcr.io/${GITHUB_REPOSITORY,,}"
-          docker build --build-arg "GIT_SHA=${GITHUB_SHA}" -t "$repo:$GITHUB_SHA" .
-          cid=$(docker run -d -p 127.0.0.1:0:8080 "$repo:$GITHUB_SHA")
-          trap 'docker rm -f "$cid"' EXIT
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build --build-arg "GIT_SHA=$VERIFIED_SHA" -t "$repo:$VERIFIED_SHA" .
+          cid=$(docker run -d -p 127.0.0.1:0:8080 "$repo:$VERIFIED_SHA")
+          trap 'docker rm -f "$cid" >/dev/null' EXIT
           for n in $(seq 1 30); do
-            [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy ] && break
+            test "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy && break
             sleep 1
           done
           test "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy
-          test "$(docker exec "$cid" wget -q -O - http://127.0.0.1:8080/version.json)" = "{\"sha\":\"$GITHUB_SHA\"}"
-          docker push "$repo:$GITHUB_SHA"
-          digest="$(docker buildx imagetools inspect "$repo:$GITHUB_SHA" --format '{{.Manifest.Digest}}')"
-          test "$digest" != "${digest#sha256:}"
-          echo "image_digest=$digest" >> "$GITHUB_ENV"
-      - name: Deploy through audited restricted account
+          port=$(docker port "$cid" 8080/tcp | sed 's/.*://')
+          curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null
+          curl -fsS "http://127.0.0.1:$port/" | grep -qi '<html'
+          test "$(curl -fsS "http://127.0.0.1:$port/version.json")" = "{\"sha\":\"$VERIFIED_SHA\"}"
+          docker push "$repo:$VERIFIED_SHA"
+          digest=$(docker buildx imagetools inspect "$repo:$VERIFIED_SHA" --format '{{.Manifest.Digest}}')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "sha=$VERIFIED_SHA digest=$digest smoke=passed" >> "$GITHUB_STEP_SUMMARY"
+      - name: Package deployment source from the exact commit
+        id: archive
         env:
+          VERIFIED_SHA: ${{ steps.revision.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git archive --format=tar.gz --output=release.tar.gz "$VERIFIED_SHA" compose.yaml deploy
+          digest=$(sha256sum release.tar.gz | cut -d' ' -f1)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment-source
+          path: release.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: deployment-source
+      - name: Deploy accepted source and inspect the local route
+        env:
+          RELEASE_SHA: ${{ needs.build.outputs.sha }}
+          IMAGE_DIGEST: ${{ needs.build.outputs.image_digest }}
+          ARCHIVE_DIGEST: ${{ needs.build.outputs.archive_digest }}
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
           DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          GHCR_READ_USER: ${{ vars.GHCR_READ_USER }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          test -n "$DEPLOY_PORT" && test -n "$KNOWN_HOSTS" && test -n "$SSH_KEY"
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$ARCHIVE_DIGEST" =~ ^[0-9a-f]{64}$ && "$DEPLOY_PORT" =~ ^[0-9]{4,5}$ ]]
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.:-]+$ && "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          test "$DEPLOY_USER" != root
+          [[ "$GHCR_READ_USER" =~ ^[A-Za-z0-9-]+$ ]]
+          test -n "$SSH_KEY" && test -n "$KNOWN_HOSTS" && test -n "$GHCR_READ_TOKEN"
+          test "$(sha256sum release.tar.gz | cut -d' ' -f1)" = "$ARCHIVE_DIGEST"
           install -m 700 -d ~/.ssh
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
+          ssh_opts=(-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
+          target="$DEPLOY_USER@$DEPLOY_HOST"
           repo="ghcr.io/${GITHUB_REPOSITORY,,}"
-          printf '%s' "$GHCR_READ_TOKEN" | ssh -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" "docker login ghcr.io -u '$GITHUB_ACTOR' --password-stdin" >/dev/null
-          ssh -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" "docker pull '$repo@$image_digest' && cd plane-game && ./deploy/deploy.sh '$GITHUB_SHA' '$repo' '$image_digest' '$DEPLOY_PORT'"
-          echo "deployed_sha=$GITHUB_SHA image_digest=$image_digest deployed_at=$(date -u +%FT%TZ) health=passed" >> "$GITHUB_STEP_SUMMARY"
+          # Production review can wait for hours; reject commits replaced on main.
+          main_sha=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$GITHUB_REPOSITORY/git/ref/heads/main" | jq -r .object.sha)
+          test "$main_sha" = "$RELEASE_SHA"
+          ssh "${ssh_opts[@]}" "$target" "mkdir -p \"\$HOME/plane-game/incoming\""
+          scp "${ssh_opts[@]}" release.tar.gz "$target:plane-game/incoming/$RELEASE_SHA.tar.gz"
+          printf '%s' "$GHCR_READ_TOKEN" | ssh "${ssh_opts[@]}" "$target" "export DOCKER_HOST=unix:///run/user/\$(id -u)/docker.sock; docker login ghcr.io -u '$GHCR_READ_USER' --password-stdin" >/dev/null
+          # Only execute archive code after its checksum passes on the host.
+          ssh "${ssh_opts[@]}" "$target" "cd \"\$HOME/plane-game\" && echo '$ARCHIVE_DIGEST  incoming/$RELEASE_SHA.tar.gz' | sha256sum -c - && mkdir -p 'incoming/$RELEASE_SHA' && tar -xzf 'incoming/$RELEASE_SHA.tar.gz' -C 'incoming/$RELEASE_SHA' && export DOCKER_HOST=unix:///run/user/\$(id -u)/docker.sock && docker pull '$repo@$IMAGE_DIGEST' && bash 'incoming/$RELEASE_SHA/deploy/promote.sh' '$RELEASE_SHA' '$repo' '$IMAGE_DIGEST' '$DEPLOY_PORT' '$GITHUB_RUN_NUMBER'"
+          echo "run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID sha=$RELEASE_SHA digest=$IMAGE_DIGEST deployed_at=$(date -u +%FT%TZ) health=passed" >> "$GITHUB_STEP_SUMMARY"
+      - name: Report failed deployment or incomplete recovery
+        if: failure()
+        env:
+          RELEASE_SHA: ${{ needs.build.outputs.sha }}
+          IMAGE_DIGEST: ${{ needs.build.outputs.image_digest }}
+        run: |
+          echo "::error::ALERT: release failed; inspect host recovery logs and dedicated route before further releases"
+          echo "ALERT: run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID sha=$RELEASE_SHA digest=$IMAGE_DIGEST health=failed recovery=check_host_logs" >> "$GITHUB_STEP_SUMMARY"

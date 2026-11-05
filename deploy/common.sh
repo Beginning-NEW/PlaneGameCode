@@ -70,8 +70,10 @@ verify_candidate_version() {
 }
 
 verify_gateway_route() {
-  curl -fsS --retry 6 --retry-delay 1 --max-time 3 "http://127.0.0.1:$APP_PORT/healthz" >/dev/null && \
-    curl -fsS --retry 6 --retry-delay 1 --max-time 3 "http://127.0.0.1:$APP_PORT/version.json" | grep -Fq "$1"
+  local url="http://127.0.0.1:$APP_PORT"
+  curl -fsS --retry 6 --retry-delay 1 --max-time 3 "$url/healthz" >/dev/null &&
+    curl -fsS --retry 6 --retry-delay 1 --max-time 3 "$url/" | grep -qi '<html' &&
+    [[ "$(curl -fsS --retry 6 --retry-delay 1 --max-time 3 "$url/version.json")" == "{\"sha\":\"$1\"}" ]]
 }
 
 read_route_sha() {

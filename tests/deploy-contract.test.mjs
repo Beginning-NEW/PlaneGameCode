@@ -16,7 +16,7 @@ test('deployment preflight is metadata-only and pins digest to the approved revi
   assert.doesNotMatch(preflight, /docker run|docker compose up|docker pull|nginx -s reload/);
   assert.match(common, /org\.opencontainers\.image\.revision/);
   assert.match(deploy, /APPROVED_IMAGE_DIGEST/);
-  assert.match(workflow, /docker pull '\$repo@\$image_digest'/);
+  assert.match(workflow, /docker pull '\$repo@\$IMAGE_DIGEST'/);
 });
 
 test('first-release cleanup and failure rollback are scoped to plane-game state', () => {
@@ -55,4 +55,25 @@ test('first-release resources carry a unique per-run ownership label', () => {
   assert.match(common, /gateway_container_any_state/);
   assert.match(common, /gateway container exists but is stopped/);
   assert.match(compose, /com\.plane-game\.deployment-id/);
+});
+
+test('automatic release is gated on successful push CI and transports matching source', async () => {
+  const promote = await readFile(new URL('../deploy/promote.sh', import.meta.url), 'utf8');
+  assert.match(workflow, /workflow_run:\s+workflows: \[Checks\]/);
+  assert.match(workflow, /workflow_run.conclusion == 'success'/);
+  assert.match(workflow, /workflow_run.event == 'push'/);
+  assert.doesNotMatch(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /git archive --format=tar.gz --output=release.tar.gz "\$VERIFIED_SHA" compose.yaml deploy/);
+  assert.match(workflow, /sha256sum -c -/);
+  assert.match(workflow, /StrictHostKeyChecking=yes/);
+  assert.match(workflow, /environment: production/);
+  assert.match(workflow, /DOCKER_HOST=unix:\/\/\/run\/user/);
+  assert.match(promote, /grep -q rootless/);
+  assert.match(promote, /last_run_number/);
+  assert.match(promote, /Stale run .* cannot supersede run/);
+  assert.match(promote, /trap failed EXIT/);
+  assert.match(common, /\$url\/healthz/);
+  assert.match(common, /\$url\/"/);
+  assert.match(common, /\$url\/version.json/);
+  assert.match(deploy, /previous healthy route could not be verified after recovery/);
 });
