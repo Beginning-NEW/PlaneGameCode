@@ -74,7 +74,7 @@ gateway_container_for_run() {
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
     gateway_owned_by_run "$id" || continue
-    [[ -z "$found" || "$found" == "$id" ]] || { log 'multiple gateway containers match this deployment id; preserving them'; return 1; }
+    [[ -z "$found" || "$found" == "$id" ]] || { printf '%s\n' 'multiple gateway containers match this deployment id; preserving them' >&2; return 1; }
     found="$id"
   done <<<"$ids"
   printf '%s\n' "$found"
@@ -92,11 +92,11 @@ candidate_container_for_run() {
     [[ "$actual_id" == "$id" ]] || continue
     [[ "$actual_deployment" == "$deployment_id" && "$actual_sha" == "$RELEASE_SHA" ]] || continue
     if [[ "$actual_digest" != "$IMAGE_DIGEST" ]]; then
-      log 'candidate container digest label mismatch; preserving this run-scoped resource'
+      printf '%s\n' 'candidate container digest label mismatch; preserving this run-scoped resource' >&2
       return 1
     fi
     candidate_owned_by_run "$id" || continue
-    [[ -z "$found" || "$found" == "$id" ]] || { log 'multiple candidate containers match this deployment id; preserving them'; return 1; }
+    [[ -z "$found" || "$found" == "$id" ]] || { printf '%s\n' 'multiple candidate containers match this deployment id; preserving them' >&2; return 1; }
     found="$id"
   done <<<"$ids"
   printf '%s\n' "$found"
@@ -108,7 +108,7 @@ network_for_run() {
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
     network_owned_by_run "$id" || continue
-    [[ -z "$found" || "$found" == "$id" ]] || { log 'multiple plane-game networks match this deployment id; preserving them'; return 1; }
+    [[ -z "$found" || "$found" == "$id" ]] || { printf '%s\n' 'multiple plane-game networks match this deployment id; preserving them' >&2; return 1; }
     found="$id"
   done <<<"$ids"
   printf '%s\n' "$found"

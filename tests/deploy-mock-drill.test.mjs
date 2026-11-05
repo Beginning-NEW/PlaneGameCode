@@ -241,7 +241,7 @@ test('mock Docker digest mismatch preserves the ambiguous candidate and network 
   try {
     const result = runPartialCandidateCreate(fixture);
     assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stdout, /candidate container digest label mismatch; preserving this run-scoped resource/);
+    assert.match(result.stderr, /candidate container digest label mismatch; preserving this run-scoped resource/);
     assert.match(result.stderr, /cleanup is incomplete for deployment-id=/);
     assert.deepEqual(
       (await readFile(join(fixture.state, 'events.log'), 'utf8')).trim().split('\n'),
