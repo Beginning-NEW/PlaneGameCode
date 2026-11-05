@@ -8,31 +8,33 @@
 
 Operations Lead 先做目标服务器的只读审计：端口、现有容器、专属 Nginx 配置与 `www` 基线；`APP_PORT` 只能使用这份审计中记录的空闲 `127.0.0.1` 端口，不能从开发机或猜测值取得。在目标机放置经审查的仓库版本，并准备 Docker Engine、Compose、curl、Bash、`sha256sum` 和已拉取的不可变镜像。只通过受控凭据通道配置 `DEPLOY_*`、`GHCR_READ_TOKEN` 等；仓库不保存值。
 
-同一候选必须先由 QA 以完整 Git SHA 和镜像 digest 签署，再由 Operations Lead 复审服务器审计和演练记录；两项结论齐备前，CEO 不得批准公开切换。GitHub Actions `Checks` 面向 PR/main；`Controlled deployment` 仅对 main 上显式手动触发，须经 `production` 环境保护规则批准。
+同一候选必须先由 QA 以完整 Git SHA 和镜像 digest 签署，再由 Operations Lead 复审服务器审计和演练记录；两项结论齐备前，CEO 不得批准公开切换。GitHub Actions `Checks` 面向 PR/main；`Controlled deployment` 在 main push CI 成功后自动触发，须经 `production` 环境保护规则批准。
 
-发布输入是四个显式值：
+发布输入是五个显式值：
 
 ```text
-FULL_SHA IMAGE_REPOSITORY APPROVED_IMAGE_DIGEST AUDITED_LOOPBACK_PORT
+FULL_SHA IMAGE_REPOSITORY APPROVED_IMAGE_DIGEST AUDITED_LOOPBACK_PORT GATEWAY_IMAGE
 ```
 
-`APPROVED_IMAGE_DIGEST` 必须是 `sha256:<64-hex>`。脚本只接受 `IMAGE_REPOSITORY@APPROVED_IMAGE_DIGEST`，并验证其 OCI `org.opencontainers.image.revision` 标签等于 `FULL_SHA`；仅有可变的 `:SHA` 标签不足以通过检查。部署工作流在推送后解析 manifest digest，拉取该 digest，再把同一组值传给部署脚本。
+`APPROVED_IMAGE_DIGEST` 必须是 `sha256:<64-hex>`。脚本只接受 `IMAGE_REPOSITORY@APPROVED_IMAGE_DIGEST`，并验证其 OCI `org.opencontainers.image.revision` 标签等于 `FULL_SHA`；仅有可变的 `:SHA` 标签不足以通过检查。网关 `GATEWAY_IMAGE` 必须为 `nginxinc/nginx-unprivileged@sha256:<64-hex>`，渲染后的 Compose 只有这一个镜像。正在运行的网关镜像 ID 若与该 digest 不符，更新和回滚均停止，等待独立审查的网关迁移。
+
+部署工作流在推送后解析 manifest digest，拉取该 digest，再把同一组值传给部署脚本。
 
 ## 只读预检与发布
 
 手动只读预检：
 
 ```bash
-./deploy/deploy.sh --dry-run FULL_SHA IMAGE_REPOSITORY APPROVED_IMAGE_DIGEST AUDITED_LOOPBACK_PORT
+./deploy/deploy.sh --dry-run FULL_SHA IMAGE_REPOSITORY APPROVED_IMAGE_DIGEST AUDITED_LOOPBACK_PORT GATEWAY_IMAGE
 ```
 
 预检检查参数、Docker daemon、Compose 语法、已在本机的 immutable image digest + revision label，以及已存在网关的 Docker 健康状态和本地 `GET /healthz`。没有网关时只检查经审计端口是否可用。它**不会** pull/run/start/stop/remove/reload/rename 容器，不创建网络，也不写 `runtime/` 或部署配置；因此不会替代实际容器或网关演练。网关 Nginx 语法在实际切换前通过现有专属 gateway 容器的 `nginx -t` 验证。
 
 正式命令去掉 `--dry-run`。候选以 digest 启动、等待 Docker 健康状态，并校验容器内 `version.json` 的 SHA 后才写专属路由。每次成功发布写入：
 
-- `runtime/releases/<SHA>/release.env`：SHA、镜像仓库/digest、配置 revision、gateway 配置 digest、健康状态和时间；
+- `runtime/releases/<SHA>/release.env`：SHA、镜像仓库/digest、网关镜像 digest、配置 revision、gateway 配置 digest、健康状态和时间；
 - `runtime/releases/<SHA>/gateway.conf`：可验证的上一健康 gateway 配置；
-- `runtime/deployment-snapshots/<UTC>-<SHA>/state.env`：部署前路由/config 快照、结果和时间。
+- `runtime/deployment-snapshots/<UTC>-<SHA>/state.env`：部署前路由/config 快照、网关镜像 digest、结果和时间。
 
 首次发布没有 `previous_healthy_sha` 时，如果 gateway 启动或切换校验失败，脚本只删除本轮 `plane-game-<SHA>` 容器、必要时删除本轮创建的 `plane-game_default` 网络和 gateway，并撤销本轮专属 `runtime/active/upstream.inc`。它不会恢复空 upstream，也不会操作 www、根域、其他 Nginx server block 或其他 Compose 项目。
 
@@ -78,14 +80,18 @@ homepage and the exact `version.json` SHA, pushes the image to GHCR and records
 its immutable digest. It archives `compose.yaml` and `deploy/` from that SHA.
 The production job waits for the GitHub `production` environment reviewers,
 rechecks the current main SHA, verifies the archived checksum locally and on the
-host, and passes SHA, digest, port and GitHub run number to the remote promoter.
+host. It streams the archived executable `deploy/plane-preflight` via pinned-key,
+public-key-only SSH before transfer, GHCR login or pull. It then passes SHA,
+application and gateway digests, port and GitHub run number to the promoter.
 
 Operations must configure `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`,
 `DEPLOY_KNOWN_HOSTS`, `GHCR_READ_TOKEN` as production environment secrets, and `GHCR_READ_USER` as a production variable, and
 `DEPLOY_PORT` as a production variable after independent host preflight.
 `DEPLOY_KNOWN_HOSTS` must be a pinned, independently verified host key, never
 a fresh `ssh-keyscan` result obtained in the workflow. The dedicated deploy user
-must have its own rootless Docker daemon at
+must be the fixed `plane-preflight` account, with no sudo entitlement,
+privileged groups or writable rootful Docker socket. The host gate verifies the
+non-root UID, home, and the same account's rootless Docker daemon at
 `/run/user/$(id -u)/docker.sock`; rootful Docker, root login and free choice
 of host port are rejected. The only application listener is the audited
 `127.0.0.1:DEPLOY_PORT`. Production Nginx, DNS and TLS remain Operations work.
@@ -95,7 +101,8 @@ automatic workflow trigger does not mean an unattended public release.
 The remote account uses `$HOME/plane-game` as its dedicated application root.
 It verifies the source archive checksum before extraction, saves the previous
 source, rejects older GitHub run numbers, applies this commit's Compose and
-scripts, and calls `deploy.sh`. The deployment verifies rootless digest binding,
+scripts, and calls `deploy.sh`. The deployment verifies rootless digest binding and the immutable Compose gateway
+reference, records that gateway digest in release and rollback state,
 container health, the loopback `/healthz`, homepage and exact `version.json`
 before recording a healthy release. On failure it restores the previous source
 and validates the previous route; incomplete recovery emits `ALERT` and fails

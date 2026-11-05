@@ -79,3 +79,40 @@ test('automatic release is gated on successful push CI and transports matching s
   assert.match(common, /\$url\/version.json/);
   assert.match(deploy, /previous healthy route could not be verified after recovery/);
 });
+
+test('archived host preflight enforces a dedicated unprivileged rootless identity before any transfer', async () => {
+  const hostGate = await readFile(new URL('../deploy/plane-preflight', import.meta.url), 'utf8');
+  assert.match(workflow, /git archive --format=tar.gz --output=release.tar.gz "\$VERIFIED_SHA" compose.yaml deploy/);
+  const gateCall = workflow.indexOf('tar -xOf release.tar.gz deploy/plane-preflight | ssh');
+  assert.ok(gateCall > workflow.indexOf('sha256sum release.tar.gz'));
+  for (const later of ['scp "${ssh_opts[@]}"', "docker login ghcr.io -u '$GHCR_READ_USER'", "docker pull '$repo@$IMAGE_DIGEST'"]) {
+    assert.ok(workflow.indexOf(later) > gateCall, `${later} must happen after preflight`);
+  }
+  assert.match(workflow, /test "\$DEPLOY_USER" = plane-preflight/);
+  assert.match(workflow, /PasswordAuthentication=no/);
+  assert.match(workflow, /KbdInteractiveAuthentication=no/);
+  assert.match(hostGate, /id -un.*plane-preflight/);
+  assert.match(hostGate, /id -u/);
+  assert.match(hostGate, /docker\|sudo\|wheel\|admin/);
+  assert.match(hostGate, /sudo -n -l/);
+  assert.match(hostGate, /cannot prove absence of sudo entitlement/);
+  assert.match(hostGate, /\/var\/run\/docker[.]sock/);
+  assert.match(hostGate, /-S "\$socket" && -O "\$socket" && -w "\$socket"/);
+  assert.match(hostGate, /docker --host "unix:\/\/\$socket" info/);
+  assert.match(hostGate, /rootless/);
+});
+
+test('Compose gateway is bound to the reviewed digest in rendered config and rollback state', () => {
+  assert.match(compose, /image: \$\{GATEWAY_IMAGE:\?/);
+  assert.doesNotMatch(compose, /image: nginxinc\/nginx-unprivileged:1[.]29-alpine\s*$/m);
+  assert.match(workflow, /gateway_image="\$\{NGINX_BASE_IMAGE\/:1[.]29-alpine@\/@\}"/);
+  assert.match(workflow, /gateway_image: \$\{\{ steps[.]image[.]outputs[.]gateway_image \}\}/);
+  assert.match(workflow, /docker pull '\$GATEWAY_IMAGE'/);
+  assert.match(common, /images=\$\(docker compose config --images\)/);
+  assert.match(common, /\[\[ "\$images" == "\$GATEWAY_IMAGE" \]\]/);
+  assert.match(common, /running gateway differs from approved digest/);
+  assert.match(common, /printf 'GATEWAY_IMAGE=%s/);
+  assert.match(common, /gateway_image=%s/);
+  assert.match(common, /gateway_image=\$\(record_value "\$record" GATEWAY_IMAGE\)/);
+  assert.match(rollback, /verify_gateway_binding/);
+});

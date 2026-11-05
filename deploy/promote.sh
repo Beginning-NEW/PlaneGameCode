@@ -1,18 +1,20 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Run from a checksum-verified git archive in the dedicated deploy user's home.
 set -euo pipefail
-[[ $# -eq 5 ]] || { echo 'Usage: promote.sh SHA REPOSITORY DIGEST PORT RUN_NUMBER' >&2; exit 1; }
-sha="$1"; repo="$2"; digest="$3"; port="$4"; run="$5"
+[[ $# -eq 6 ]] || { echo 'Usage: promote.sh SHA REPOSITORY DIGEST PORT RUN_NUMBER GATEWAY_IMAGE' >&2; exit 1; }
+sha="$1"; repo="$2"; digest="$3"; port="$4"; run="$5"; gateway_image="$6"
 [[ "$sha" =~ ^[0-9a-f]{40}$ && "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
 [[ "$repo" =~ ^[a-zA-Z0-9][a-zA-Z0-9./_-]*$ && "$port" =~ ^[0-9]{4,5}$ ]] || exit 1
 [[ "$run" =~ ^[1-9][0-9]*$ && ${#run} -le 15 ]] || exit 1
-[[ $(id -u) -ne 0 ]] || { echo 'Refusing root deployment' >&2; exit 1; }
+[[ "$gateway_image" =~ ^nginxinc/nginx-unprivileged@sha256:[a-f0-9]{64}$ ]] || exit 1
+[[ $(id -un) == plane-preflight && $(id -u) -ne 0 ]] || { echo 'Refusing deployment outside plane-preflight' >&2; exit 1; }
 export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
 docker info --format '{{json .SecurityOptions}}' | grep -q rootless || { echo 'Rootless Docker is required' >&2; exit 1; }
 root="$HOME/plane-game"
 stage="$root/incoming/$sha"
 [[ "$PWD" == "$root" && -f "$stage/compose.yaml" && -f "$stage/deploy/deploy.sh" ]] || exit 1
 [[ -z "$(find "$stage" -type l -print -quit)" ]] || { echo 'Source archive contains a symlink' >&2; exit 1; }
+"$stage/deploy/plane-preflight"
 export PLANE_GAME_RUNTIME_DIR="$root/runtime"
 mkdir -p "$PLANE_GAME_RUNTIME_DIR" "$root/deploy"
 exec 8>"$PLANE_GAME_RUNTIME_DIR/.release.lock"
@@ -78,14 +80,16 @@ failed() {
       recovery=incomplete
     fi
   done
-  printf 'sha=%s digest=%s time=%s health=failed recovery=%s\n' "$sha" "$digest" "$(date -u +%FT%TZ)" "$recovery" >&2
+  printf 'sha=%s digest=%s gateway=%s time=%s health=failed recovery=%s\n' "$sha" "$digest" "$gateway_image" "$(date -u +%FT%TZ)" "$recovery" >&2
 }
 trap failed EXIT
 cp "$stage/compose.yaml" "$root/compose.yaml"
 cp -a "$stage/deploy/." "$root/deploy/"
 cmp "$stage/compose.yaml" "$root/compose.yaml"
-for source in "$stage"/deploy/*; do cmp "$source" "$root/deploy/${source##*/}"; done
+while IFS= read -r -d '' source; do
+  cmp "$source" "$root/deploy/${source#"$stage/deploy/"}"
+done < <(find "$stage/deploy" -type f -print0)
 printf '%s\n' "$run" > "$PLANE_GAME_RUNTIME_DIR/last_run_number"
-bash "$root/deploy/deploy.sh" "$sha" "$repo" "$digest" "$port"
+bash "$root/deploy/deploy.sh" "$sha" "$repo" "$digest" "$port" "$gateway_image"
 trap - EXIT
-printf 'sha=%s digest=%s time=%s health=healthy recovery=not_required run=%s\n' "$sha" "$digest" "$(date -u +%FT%TZ)" "$run"
+printf 'sha=%s digest=%s gateway=%s time=%s health=healthy recovery=not_required run=%s\n' "$sha" "$digest" "$gateway_image" "$(date -u +%FT%TZ)" "$run"

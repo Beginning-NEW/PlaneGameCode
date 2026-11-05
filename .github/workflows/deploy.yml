@@ -23,6 +23,7 @@ jobs:
     outputs:
       sha: ${{ steps.revision.outputs.sha }}
       image_digest: ${{ steps.image.outputs.digest }}
+      gateway_image: ${{ steps.image.outputs.gateway_image }}
       archive_digest: ${{ steps.archive.outputs.digest }}
     steps:
       - name: Select the verified main commit
@@ -61,7 +62,7 @@ jobs:
           pnpm lint
           pnpm format --check
           pnpm test
-          bash -n deploy/*.sh
+          bash -n deploy/*.sh deploy/plane-preflight
           pnpm build
           pnpm exec playwright install --with-deps chromium
           pnpm test:e2e
@@ -98,6 +99,9 @@ jobs:
           digest=$(docker buildx imagetools inspect "$repo:$VERIFIED_SHA" --format '{{.Manifest.Digest}}')
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          gateway_image="${NGINX_BASE_IMAGE/:1.29-alpine@/@}"
+          [[ "$gateway_image" =~ ^nginxinc/nginx-unprivileged@sha256:[0-9a-f]{64}$ ]]
+          echo "gateway_image=$gateway_image" >> "$GITHUB_OUTPUT"
           echo "sha=$VERIFIED_SHA digest=$digest smoke=passed" >> "$GITHUB_STEP_SUMMARY"
       - name: Package deployment source from the exact commit
         id: archive
@@ -129,6 +133,7 @@ jobs:
         env:
           RELEASE_SHA: ${{ needs.build.outputs.sha }}
           IMAGE_DIGEST: ${{ needs.build.outputs.image_digest }}
+          GATEWAY_IMAGE: ${{ needs.build.outputs.gateway_image }}
           ARCHIVE_DIGEST: ${{ needs.build.outputs.archive_digest }}
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
@@ -141,9 +146,10 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$GATEWAY_IMAGE" =~ ^nginxinc/nginx-unprivileged@sha256:[0-9a-f]{64}$ ]]
           [[ "$ARCHIVE_DIGEST" =~ ^[0-9a-f]{64}$ && "$DEPLOY_PORT" =~ ^[0-9]{4,5}$ ]]
-          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.:-]+$ && "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
-          test "$DEPLOY_USER" != root
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.:-]+$ ]]
+          test "$DEPLOY_USER" = plane-preflight
           [[ "$GHCR_READ_USER" =~ ^[A-Za-z0-9-]+$ ]]
           test -n "$SSH_KEY" && test -n "$KNOWN_HOSTS" && test -n "$GHCR_READ_TOKEN"
           test "$(sha256sum release.tar.gz | cut -d' ' -f1)" = "$ARCHIVE_DIGEST"
@@ -152,23 +158,25 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh_opts=(-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
+          ssh_opts=(-o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PreferredAuthentications=publickey -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
           target="$DEPLOY_USER@$DEPLOY_HOST"
           repo="ghcr.io/${GITHUB_REPOSITORY,,}"
           # Production review can wait for hours; reject commits replaced on main.
           main_sha=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$GITHUB_REPOSITORY/git/ref/heads/main" | jq -r .object.sha)
           test "$main_sha" = "$RELEASE_SHA"
+          tar -xOf release.tar.gz deploy/plane-preflight | ssh "${ssh_opts[@]}" "$target" 'bash -s'
           ssh "${ssh_opts[@]}" "$target" "mkdir -p \"\$HOME/plane-game/incoming\""
           scp "${ssh_opts[@]}" release.tar.gz "$target:plane-game/incoming/$RELEASE_SHA.tar.gz"
           printf '%s' "$GHCR_READ_TOKEN" | ssh "${ssh_opts[@]}" "$target" "export DOCKER_HOST=unix:///run/user/\$(id -u)/docker.sock; docker login ghcr.io -u '$GHCR_READ_USER' --password-stdin" >/dev/null
           # Only execute archive code after its checksum passes on the host.
-          ssh "${ssh_opts[@]}" "$target" "cd \"\$HOME/plane-game\" && echo '$ARCHIVE_DIGEST  incoming/$RELEASE_SHA.tar.gz' | sha256sum -c - && mkdir -p 'incoming/$RELEASE_SHA' && tar -xzf 'incoming/$RELEASE_SHA.tar.gz' -C 'incoming/$RELEASE_SHA' && export DOCKER_HOST=unix:///run/user/\$(id -u)/docker.sock && docker pull '$repo@$IMAGE_DIGEST' && bash 'incoming/$RELEASE_SHA/deploy/promote.sh' '$RELEASE_SHA' '$repo' '$IMAGE_DIGEST' '$DEPLOY_PORT' '$GITHUB_RUN_NUMBER'"
-          echo "run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID sha=$RELEASE_SHA digest=$IMAGE_DIGEST deployed_at=$(date -u +%FT%TZ) health=passed" >> "$GITHUB_STEP_SUMMARY"
+          ssh "${ssh_opts[@]}" "$target" "cd \"\$HOME/plane-game\" && echo '$ARCHIVE_DIGEST  incoming/$RELEASE_SHA.tar.gz' | sha256sum -c - && mkdir -p 'incoming/$RELEASE_SHA' && tar -xzf 'incoming/$RELEASE_SHA.tar.gz' -C 'incoming/$RELEASE_SHA' && export DOCKER_HOST=unix:///run/user/\$(id -u)/docker.sock && docker pull '$repo@$IMAGE_DIGEST' && docker pull '$GATEWAY_IMAGE' && bash 'incoming/$RELEASE_SHA/deploy/promote.sh' '$RELEASE_SHA' '$repo' '$IMAGE_DIGEST' '$DEPLOY_PORT' '$GITHUB_RUN_NUMBER' '$GATEWAY_IMAGE'"
+          echo "run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID sha=$RELEASE_SHA digest=$IMAGE_DIGEST gateway=$GATEWAY_IMAGE deployed_at=$(date -u +%FT%TZ) health=passed" >> "$GITHUB_STEP_SUMMARY"
       - name: Report failed deployment or incomplete recovery
         if: failure()
         env:
           RELEASE_SHA: ${{ needs.build.outputs.sha }}
           IMAGE_DIGEST: ${{ needs.build.outputs.image_digest }}
+          GATEWAY_IMAGE: ${{ needs.build.outputs.gateway_image }}
         run: |
           echo "::error::ALERT: release failed; inspect host recovery logs and dedicated route before further releases"
-          echo "ALERT: run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID sha=$RELEASE_SHA digest=$IMAGE_DIGEST health=failed recovery=check_host_logs" >> "$GITHUB_STEP_SUMMARY"
+          echo "ALERT: run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID sha=$RELEASE_SHA digest=$IMAGE_DIGEST gateway=$GATEWAY_IMAGE health=failed recovery=check_host_logs" >> "$GITHUB_STEP_SUMMARY"

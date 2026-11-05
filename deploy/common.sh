@@ -18,6 +18,20 @@ validate_sha() { [[ "$1" =~ ^[a-fA-F0-9]{40}$ ]] || die 'SHA must be a full 40-c
 validate_digest() { [[ "$1" =~ ^sha256:[a-fA-F0-9]{64}$ ]] || die 'digest must be a sha256: digest'; }
 validate_port() { [[ "$1" =~ ^[0-9]{2,5}$ ]] && (( 10#$1 >= 1024 && 10#$1 <= 65535 )) || die 'port must be 1024-65535'; }
 validate_repo() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9./_-]*$ ]] || die 'image repository contains invalid characters'; }
+validate_gateway_image() { [[ "$1" =~ ^nginxinc/nginx-unprivileged@sha256:[a-f0-9]{64}$ ]] || die 'gateway image must be an approved nginxinc/nginx-unprivileged@sha256 digest'; }
+
+verify_gateway_binding() {
+  local images expected_id gateway running_id
+  validate_gateway_image "$GATEWAY_IMAGE"
+  images=$(docker compose config --images) || die 'compose image rendering failed'
+  [[ "$images" == "$GATEWAY_IMAGE" ]] || die 'rendered gateway image differs from approved digest'
+  expected_id=$(docker image inspect --format '{{.Id}}' "$GATEWAY_IMAGE") || die 'approved gateway digest unavailable locally'
+  gateway=$(gateway_container_any_state)
+  if [[ -n "$gateway" ]]; then
+    running_id=$(docker container inspect --format '{{.Image}}' "$gateway") || die 'gateway image identity unavailable'
+    [[ "$running_id" == "$expected_id" ]] || die 'running gateway differs from approved digest; requires a separately reviewed gateway migration'
+  fi
+}
 
 config_revision() {
   sha256sum compose.yaml deploy/gateway.conf deploy/app.conf | sha256sum | awk '{print $1}'
@@ -104,7 +118,7 @@ snapshot_deployment_state() {
     printf 'route_present=false\n' > "$SNAPSHOT_DIR/state.env"
   fi
   cp deploy/gateway.conf "$SNAPSHOT_DIR/gateway.conf"
-  printf 'snapshot_at=%s\nroute_sha=%s\nconfig_revision=%s\n' "$(now_utc)" "$route_sha" "$(config_revision)" >> "$SNAPSHOT_DIR/state.env"
+  printf 'snapshot_at=%s\nroute_sha=%s\nconfig_revision=%s\ngateway_image=%s\n' "$(now_utc)" "$route_sha" "$(config_revision)" "$GATEWAY_IMAGE" >> "$SNAPSHOT_DIR/state.env"
 }
 
 snapshot_value() {
@@ -150,6 +164,7 @@ write_release_record() {
     printf 'RELEASE_SHA=%s\n' "$sha"
     printf 'IMAGE_REPOSITORY=%s\n' "$IMAGE_REPOSITORY"
     printf 'IMAGE_DIGEST=%s\n' "$IMAGE_DIGEST"
+    printf 'GATEWAY_IMAGE=%s\n' "$GATEWAY_IMAGE"
     printf 'CONFIG_REVISION=%s\n' "$(config_revision)"
     printf 'GATEWAY_CONFIG_DIGEST=%s\n' "$(gateway_config_digest)"
     printf 'HEALTH_STATUS=healthy\n'
@@ -159,21 +174,24 @@ write_release_record() {
 }
 
 verify_recorded_release() {
-  local sha="$1" release_dir_path record repo digest stored_sha health stored_config_digest
+  local sha="$1" release_dir_path record repo digest stored_sha health stored_config_digest gateway_image
   release_dir_path=$(release_dir "$sha")
   record="$release_dir_path/release.env"
   [[ -f "$record" && -f "$release_dir_path/gateway.conf" ]] || die "release record or gateway configuration missing for $sha"
   stored_sha=$(record_value "$record" RELEASE_SHA)
   repo=$(record_value "$record" IMAGE_REPOSITORY)
   digest=$(record_value "$record" IMAGE_DIGEST)
+  gateway_image=$(record_value "$record" GATEWAY_IMAGE)
   health=$(record_value "$record" HEALTH_STATUS)
   stored_config_digest=$(record_value "$record" GATEWAY_CONFIG_DIGEST)
   [[ "$stored_sha" == "$sha" && "$health" == healthy ]] || die "release record is not a verified healthy release: $sha"
   validate_repo "$repo"; validate_digest "$digest"
+  validate_gateway_image "$gateway_image"
   [[ "$(sha256sum "$release_dir_path/gateway.conf" | awk '{print $1}')" == "$stored_config_digest" ]] || die "recorded gateway configuration digest mismatch for $sha"
   RELEASE_SHA="$sha"
   IMAGE_REPOSITORY="$repo"
   IMAGE_DIGEST="$digest"
+  export GATEWAY_IMAGE="$gateway_image"
   RECORDED_CONFIG_REVISION=$(record_value "$record" CONFIG_REVISION)
   verify_image_binding
 }
@@ -211,6 +229,7 @@ preflight_readonly() {
   command -v sha256sum >/dev/null || die 'sha256sum required'
   docker info >/dev/null || die 'docker daemon unavailable'
   docker compose config -q || die 'compose syntax invalid'
+  verify_gateway_binding
   verify_image_binding
   gateway=$(gateway_container)
   if [[ -n "$gateway" ]]; then

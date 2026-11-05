@@ -4,17 +4,18 @@ source "$(dirname "$0")/common.sh"
 
 dry_run=false
 if [[ "${1:-}" == --dry-run ]]; then dry_run=true; shift; fi
-[[ $# -eq 4 ]] || die 'Usage: deploy.sh [--dry-run] FULL_SHA IMAGE_REPOSITORY APPROVED_IMAGE_DIGEST AUDITED_LOOPBACK_PORT'
-validate_sha "$1"; validate_repo "$2"; validate_digest "$3"; validate_port "$4"
+[[ $# -eq 5 ]] || die 'Usage: deploy.sh [--dry-run] FULL_SHA IMAGE_REPOSITORY APPROVED_IMAGE_DIGEST AUDITED_LOOPBACK_PORT GATEWAY_IMAGE'
+validate_sha "$1"; validate_repo "$2"; validate_digest "$3"; validate_port "$4"; validate_gateway_image "$5"
 
 RELEASE_SHA="$1"
 IMAGE_REPOSITORY="$2"
 IMAGE_DIGEST="$3"
 export APP_PORT="$4"
+export GATEWAY_IMAGE="$5"
 
 preflight_readonly
 if "$dry_run"; then
-  printf 'readonly preflight passed: sha=%s digest=%s config_revision=%s\n' "$RELEASE_SHA" "$IMAGE_DIGEST" "$(config_revision)"
+  printf 'readonly preflight passed: sha=%s digest=%s gateway=%s config_revision=%s\n' "$RELEASE_SHA" "$IMAGE_DIGEST" "$GATEWAY_IMAGE" "$(config_revision)"
   print_preflight_boundary
   exit 0
 fi
@@ -234,5 +235,5 @@ write_release_record "$RELEASE_SHA"
 if [[ -n "$old_sha" ]]; then printf '%s\n' "$old_sha" > "$RUNTIME_DIR/previous_healthy_sha"; fi
 printf '%s\n' "$RELEASE_SHA" > "$RUNTIME_DIR/active_sha"
 record_snapshot_outcome 'deployed' 'candidate healthy and route verified'
-printf 'deployment healthy: sha=%s digest=%s config_revision=%s health=healthy port=127.0.0.1:%s time=%s\n' \
-  "$RELEASE_SHA" "$IMAGE_DIGEST" "$(config_revision)" "$APP_PORT" "$(now_utc)"
+printf 'deployment healthy: sha=%s digest=%s gateway=%s config_revision=%s health=healthy port=127.0.0.1:%s time=%s\n' \
+  "$RELEASE_SHA" "$IMAGE_DIGEST" "$GATEWAY_IMAGE" "$(config_revision)" "$APP_PORT" "$(now_utc)"

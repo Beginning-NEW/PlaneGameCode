@@ -17,19 +17,19 @@ validate_sha "$current_sha"
 
 command -v docker >/dev/null && command -v curl >/dev/null && command -v sha256sum >/dev/null || die 'docker, curl, and sha256sum required'
 docker info >/dev/null || die 'docker daemon unavailable'
-docker compose config -q || die 'compose syntax invalid'
-gateway=$(gateway_container)
-[[ -n "$gateway" ]] || die 'gateway container missing; active route unchanged'
-
 # A broken current application is the reason to roll back. Only the recorded previous release must be healthy.
 verify_recorded_release "$previous_sha"
+docker compose config -q || die 'compose syntax invalid'
+verify_gateway_binding
+gateway=$(gateway_container)
+[[ -n "$gateway" ]] || die 'gateway container missing; active route unchanged'
 wait_healthy "plane-game-$previous_sha" || die 'previous_healthy_sha container unhealthy or missing; active route unchanged'
 RELEASE_SHA="$previous_sha"
 verify_candidate_version "plane-game-$previous_sha" || die 'previous release version.json does not match its recorded SHA'
 
 if "$dry_run"; then
-  printf 'rollback preflight passed: from=%s to=%s digest=%s config_revision=%s previous_health=healthy\n' \
-    "$current_sha" "$previous_sha" "$IMAGE_DIGEST" "$RECORDED_CONFIG_REVISION"
+  printf 'rollback preflight passed: from=%s to=%s digest=%s gateway=%s config_revision=%s previous_health=healthy\n' \
+    "$current_sha" "$previous_sha" "$IMAGE_DIGEST" "$GATEWAY_IMAGE" "$RECORDED_CONFIG_REVISION"
   print_preflight_boundary
   exit 0
 fi
@@ -51,5 +51,5 @@ printf '%s\n' "$current_sha" > "$RUNTIME_DIR/previous_healthy_sha"
 printf '%s\n' "$previous_sha" > "$RUNTIME_DIR/active_sha"
 duration=$((SECONDS - started_at))
 record_snapshot_outcome 'rolled_back' "from=$current_sha to=$previous_sha duration_seconds=$duration"
-printf 'rollback healthy: from=%s to=%s digest=%s config_revision=%s health=healthy duration_seconds=%s port=127.0.0.1:%s time=%s\n' \
-  "$current_sha" "$previous_sha" "$IMAGE_DIGEST" "$RECORDED_CONFIG_REVISION" "$duration" "$APP_PORT" "$(now_utc)"
+printf 'rollback healthy: from=%s to=%s digest=%s gateway=%s config_revision=%s health=healthy duration_seconds=%s port=127.0.0.1:%s time=%s\n' \
+  "$current_sha" "$previous_sha" "$IMAGE_DIGEST" "$GATEWAY_IMAGE" "$RECORDED_CONFIG_REVISION" "$duration" "$APP_PORT" "$(now_utc)"

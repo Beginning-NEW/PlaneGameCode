@@ -1,7 +1,7 @@
 name: plane-game
 services:
   gateway:
-    image: nginxinc/nginx-unprivileged:1.29-alpine
+    image: ${GATEWAY_IMAGE:?Select approved nginxinc/nginx-unprivileged@sha256 digest}
     restart: unless-stopped
     labels:
       com.plane-game.deployment-id: "${PLANE_GAME_DEPLOYMENT_ID:-manual}"

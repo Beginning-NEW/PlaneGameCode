@@ -10,6 +10,7 @@ import test from 'node:test';
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const releaseSha = '0123456789abcdef0123456789abcdef01234567';
 const approvedDigest = `sha256:${'a'.repeat(64)}`;
+const gatewayImage = `nginxinc/nginx-unprivileged@sha256:${'c'.repeat(64)}`;
 const mismatchedDigest = `sha256:${'b'.repeat(64)}`;
 
 const mockDocker = `#!/usr/bin/env bash
@@ -26,7 +27,10 @@ shift
 case "$command" in
   info) exit 0 ;;
   compose)
-    [[ "$1" == config ]] && exit 0
+    if [[ "$1" == config ]]; then
+      [[ "\${2:-}" == --images ]] && printf '%s\\n' "$GATEWAY_IMAGE"
+      exit 0
+    fi
     [[ "$1" == ps ]] && exit 0
     exit 1
     ;;
@@ -36,6 +40,7 @@ case "$command" in
       case "$3" in
         *org.opencontainers.image.revision*) printf '%s\\n' "$MOCK_IMAGE_SHA" ;;
         *RepoDigests*) printf '%s@%s\\n' "$MOCK_IMAGE_REPOSITORY" "$MOCK_APPROVED_DIGEST" ;;
+        *'{{.Id}}'*) printf 'sha256:%s\\n' "$(printf c%.0s {1..64})" ;;
         *) exit 1 ;;
       esac
     fi
@@ -175,7 +180,7 @@ function runPartialCandidateCreate(fixture) {
     bashExecutable,
     [
       '-c',
-      'to_shell_path() { if command -v cygpath >/dev/null 2>&1; then cygpath -u "$1"; else printf "%s\\n" "$1"; fi; }; bin=$(to_shell_path "$1"); deploy=$(to_shell_path "$2"); export PATH="$bin:$PATH"; export MOCK_DOCKER_STATE="$(to_shell_path "$7")"; export PLANE_GAME_RUNTIME_DIR="$(to_shell_path "$8")"; exec "$BASH" "$deploy" "$3" "$4" "$5" "$6"',
+      'to_shell_path() { if command -v cygpath >/dev/null 2>&1; then cygpath -u "$1"; else printf "%s\\n" "$1"; fi; }; bin=$(to_shell_path "$1"); deploy=$(to_shell_path "$2"); export PATH="$bin:$PATH"; export MOCK_DOCKER_STATE="$(to_shell_path "$8")"; export PLANE_GAME_RUNTIME_DIR="$(to_shell_path "$9")"; exec "$BASH" "$deploy" "$3" "$4" "$5" "$6" "$7"',
       'deploy-mock-drill',
       join(fixture.root, 'bin'),
       join(fixture.root, 'deploy', 'deploy.sh'),
@@ -183,6 +188,7 @@ function runPartialCandidateCreate(fixture) {
       'example/plane-game',
       approvedDigest,
       '65535',
+      gatewayImage,
       fixture.state,
       fixture.runtime,
     ],
@@ -193,6 +199,7 @@ function runPartialCandidateCreate(fixture) {
         ...process.env,
         PLANE_GAME_RUNTIME_DIR: fixture.runtime,
         MOCK_DOCKER_STATE: fixture.state,
+        GATEWAY_IMAGE: gatewayImage,
         MOCK_IMAGE_SHA: releaseSha,
         MOCK_IMAGE_REPOSITORY: 'example/plane-game',
         MOCK_APPROVED_DIGEST: approvedDigest,
@@ -223,6 +230,7 @@ test('mock Docker first-release failure removes only a fully matching candidate 
     assert.equal(existsSync(join(fixture.runtime, 'active', 'upstream.inc')), false);
     assert.equal(existsSync(join(fixture.runtime, 'previous_healthy_sha')), false);
     assert.match(await snapshotState(fixture.runtime), /outcome=reverted/);
+    assert.match(await snapshotState(fixture.runtime), /gateway_image=nginxinc\/nginx-unprivileged@sha256:/);
   } finally {
     await fixture.cleanup();
   }
@@ -242,6 +250,7 @@ test('mock Docker digest mismatch preserves the ambiguous candidate and network 
     assert.equal(existsSync(join(fixture.state, 'candidate.id')), true);
     assert.equal(existsSync(join(fixture.state, 'network.id')), true);
     assert.match(await snapshotState(fixture.runtime), /outcome=revert_incomplete/);
+    assert.match(await snapshotState(fixture.runtime), /gateway_image=nginxinc\/nginx-unprivileged@sha256:/);
   } finally {
     await fixture.cleanup();
   }
