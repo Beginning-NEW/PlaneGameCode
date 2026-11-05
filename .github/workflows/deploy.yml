@@ -125,6 +125,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      packages: read
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -139,9 +140,7 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
           DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
-          GHCR_READ_USER: ${{ vars.GHCR_READ_USER }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -150,8 +149,7 @@ jobs:
           [[ "$ARCHIVE_DIGEST" =~ ^[0-9a-f]{64}$ && "$DEPLOY_PORT" =~ ^[0-9]{4,5}$ ]]
           [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.:-]+$ ]]
           test "$DEPLOY_USER" = plane-preflight
-          [[ "$GHCR_READ_USER" =~ ^[A-Za-z0-9-]+$ ]]
-          test -n "$SSH_KEY" && test -n "$KNOWN_HOSTS" && test -n "$GHCR_READ_TOKEN"
+          test -n "$SSH_KEY" && test -n "$KNOWN_HOSTS" && test -n "$GH_TOKEN"
           test "$(sha256sum release.tar.gz | cut -d' ' -f1)" = "$ARCHIVE_DIGEST"
           install -m 700 -d ~/.ssh
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
@@ -167,9 +165,23 @@ jobs:
           tar -xOf release.tar.gz deploy/plane-preflight | ssh "${ssh_opts[@]}" "$target" 'bash -s'
           ssh "${ssh_opts[@]}" "$target" "mkdir -p \"\$HOME/plane-game/incoming\""
           scp "${ssh_opts[@]}" release.tar.gz "$target:plane-game/incoming/$RELEASE_SHA.tar.gz"
-          printf '%s' "$GHCR_READ_TOKEN" | ssh "${ssh_opts[@]}" "$target" "export DOCKER_HOST=unix:///run/user/\$(id -u)/docker.sock; docker login ghcr.io -u '$GHCR_READ_USER' --password-stdin" >/dev/null
-          # Only execute archive code after its checksum passes on the host.
-          ssh "${ssh_opts[@]}" "$target" "cd \"\$HOME/plane-game\" && echo '$ARCHIVE_DIGEST  incoming/$RELEASE_SHA.tar.gz' | sha256sum -c - && mkdir -p 'incoming/$RELEASE_SHA' && tar -xzf 'incoming/$RELEASE_SHA.tar.gz' -C 'incoming/$RELEASE_SHA' && export DOCKER_HOST=unix:///run/user/\$(id -u)/docker.sock && docker pull '$repo@$IMAGE_DIGEST' && docker pull '$GATEWAY_IMAGE' && bash 'incoming/$RELEASE_SHA/deploy/promote.sh' '$RELEASE_SHA' '$repo' '$IMAGE_DIGEST' '$DEPLOY_PORT' '$GITHUB_RUN_NUMBER' '$GATEWAY_IMAGE'"
+          # Verify the archive before executing it; the job token is read-only and short-lived.
+          # One SSH process owns the temporary Docker credentials and removes them on every exit.
+          printf '%s' "$GH_TOKEN" | ssh "${ssh_opts[@]}" "$target" "
+            set -eu
+            cd \"\$HOME/plane-game\"
+            echo '$ARCHIVE_DIGEST  incoming/$RELEASE_SHA.tar.gz' | sha256sum -c -
+            mkdir -p 'incoming/$RELEASE_SHA'
+            tar -xzf 'incoming/$RELEASE_SHA.tar.gz' -C 'incoming/$RELEASE_SHA'
+            umask 077
+            docker_config=\$(mktemp -d \"\$HOME/plane-game/incoming/.docker-auth.XXXXXX\")
+            trap 'rm -rf -- \"\$docker_config\"' EXIT
+            export DOCKER_CONFIG=\"\$docker_config\" DOCKER_HOST=unix:///run/user/\$(id -u)/docker.sock
+            docker login ghcr.io -u '$GITHUB_ACTOR' --password-stdin >/dev/null
+            docker pull '$repo@$IMAGE_DIGEST'
+            docker pull '$GATEWAY_IMAGE'
+            bash 'incoming/$RELEASE_SHA/deploy/promote.sh' '$RELEASE_SHA' '$repo' '$IMAGE_DIGEST' '$DEPLOY_PORT' '$GITHUB_RUN_NUMBER' '$GATEWAY_IMAGE'
+          "
           echo "run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID sha=$RELEASE_SHA digest=$IMAGE_DIGEST gateway=$GATEWAY_IMAGE deployed_at=$(date -u +%FT%TZ) health=passed" >> "$GITHUB_STEP_SUMMARY"
       - name: Report failed deployment or incomplete recovery
         if: failure()

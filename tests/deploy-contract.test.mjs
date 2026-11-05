@@ -85,7 +85,7 @@ test('archived host preflight enforces a dedicated unprivileged rootless identit
   assert.match(workflow, /git archive --format=tar.gz --output=release.tar.gz "\$VERIFIED_SHA" compose.yaml deploy/);
   const gateCall = workflow.indexOf('tar -xOf release.tar.gz deploy/plane-preflight | ssh');
   assert.ok(gateCall > workflow.indexOf('sha256sum release.tar.gz'));
-  for (const later of ['scp "${ssh_opts[@]}"', "docker login ghcr.io -u '$GHCR_READ_USER'", "docker pull '$repo@$IMAGE_DIGEST'"]) {
+  for (const later of ['scp "${ssh_opts[@]}"', "docker login ghcr.io -u '$GITHUB_ACTOR'", "docker pull '$repo@$IMAGE_DIGEST'"]) {
     assert.ok(workflow.indexOf(later) > gateCall, `${later} must happen after preflight`);
   }
   assert.match(workflow, /test "\$DEPLOY_USER" = plane-preflight/);
@@ -100,6 +100,19 @@ test('archived host preflight enforces a dedicated unprivileged rootless identit
   assert.match(hostGate, /-S "\$socket" && -O "\$socket" && -w "\$socket"/);
   assert.match(hostGate, /docker --host "unix:\/\/\$socket" info/);
   assert.match(hostGate, /rootless/);
+});
+
+test('deploy reads GHCR with only the run-scoped token and removes remote Docker credentials', () => {
+  const deployJob = workflow.split(/^  deploy:$/m)[1];
+  assert.ok(deployJob, 'deploy job must exist');
+  assert.match(deployJob, /permissions:\s+contents: read\s+actions: read\s+packages: read/);
+  assert.match(deployJob, /GH_TOKEN: \$\{\{ github[.]token \}\}/);
+  assert.doesNotMatch(deployJob, /GHCR_READ_TOKEN|GHCR_READ_USER/);
+  assert.match(deployJob, /docker_config=\\\$\(mktemp -d/);
+  assert.match(deployJob, /export DOCKER_CONFIG=/);
+  assert.match(deployJob, /trap 'rm -rf -- .*docker_config.*' EXIT/);
+  assert.ok(deployJob.indexOf('sha256sum -c -') < deployJob.indexOf('docker login ghcr.io'));
+  assert.ok(deployJob.indexOf('docker login ghcr.io') < deployJob.indexOf("docker pull '$repo@$IMAGE_DIGEST'"));
 });
 
 test('Compose gateway is bound to the reviewed digest in rendered config and rollback state', () => {

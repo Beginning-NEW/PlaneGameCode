@@ -6,7 +6,7 @@
 
 ## 发布前门禁与不可变候选
 
-Operations Lead 先做目标服务器的只读审计：端口、现有容器、专属 Nginx 配置与 `www` 基线；`APP_PORT` 只能使用这份审计中记录的空闲 `127.0.0.1` 端口，不能从开发机或猜测值取得。在目标机放置经审查的仓库版本，并准备 Docker Engine、Compose、curl、Bash、`sha256sum` 和已拉取的不可变镜像。只通过受控凭据通道配置 `DEPLOY_*`、`GHCR_READ_TOKEN` 等；仓库不保存值。
+Operations Lead 先做目标服务器的只读审计：端口、现有容器、专属 Nginx 配置与 `www` 基线；`APP_PORT` 只能使用这份审计中记录的空闲 `127.0.0.1` 端口，不能从开发机或猜测值取得。在目标机放置经审查的仓库版本，并准备 Docker Engine、Compose、curl、Bash、`sha256sum` 和已拉取的不可变镜像。只通过受控凭据通道配置 `DEPLOY_*` 等；仓库不保存值。
 
 同一候选必须先由 QA 以完整 Git SHA 和镜像 digest 签署，再由 Operations Lead 复审服务器审计和演练记录；两项结论齐备前，CEO 不得批准公开切换。GitHub Actions `Checks` 面向 PR/main；`Controlled deployment` 在 main push CI 成功后自动触发，须经 `production` 环境保护规则批准。
 
@@ -85,7 +85,7 @@ public-key-only SSH before transfer, GHCR login or pull. It then passes SHA,
 application and gateway digests, port and GitHub run number to the promoter.
 
 Operations must configure `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`,
-`DEPLOY_KNOWN_HOSTS`, `GHCR_READ_TOKEN` as production environment secrets, and `GHCR_READ_USER` as a production variable, and
+`DEPLOY_KNOWN_HOSTS` as production environment secrets, and
 `DEPLOY_PORT` as a production variable after independent host preflight.
 `DEPLOY_KNOWN_HOSTS` must be a pinned, independently verified host key, never
 a fresh `ssh-keyscan` result obtained in the workflow. The dedicated deploy user
@@ -97,6 +97,8 @@ of host port are rejected. The only application listener is the audited
 `127.0.0.1:DEPLOY_PORT`. Production Nginx, DNS and TLS remain Operations work.
 Keep environment review and the first public cutover gated by CEO approval; an
 automatic workflow trigger does not mean an unattended public release.
+
+The deploy job grants `packages: read` to its own run-scoped `GITHUB_TOKEN` and sends it only to the audited SSH account over the verified host key. The account uses a temporary `DOCKER_CONFIG` for GHCR login and pull, and removes it on success or failure. A separate long-lived `GHCR_READ_TOKEN` secret or login name is not configured. If a real run demonstrates that this repository package denies that token, stop and request the smallest repository-scoped `read:packages` credential before another deployment attempt.
 
 The remote account uses `$HOME/plane-game` as its dedicated application root.
 It verifies the source archive checksum before extraction, saves the previous
