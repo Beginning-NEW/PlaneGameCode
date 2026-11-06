@@ -63,4 +63,8 @@ test('ordering and credential documentation preserve the reviewed safety boundar
     '[YOU-47](/YOU/issues/YOU-47)',
     'cannot replace that admission gate',
   ]) assert.ok(docs.includes(value), `missing RUNBOOK boundary: ${value}`);
+  assert.match(docs, /单调递增的 Actions `run_number`/);
+  assert.match(docs, /`run_id` 只用于唯一标识 run/);
+  assert.match(docs, /专用机器账号用户名 \+ 可轮换 PAT \(classic\)/);
+  assert.doesNotMatch(docs, /Actions run id 单调|较旧 Actions run id|专用机器人用户名 \+ 可轮换 token/);
 });

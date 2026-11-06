@@ -12,7 +12,7 @@ GitHub Actions 是 PR/main 重型 CI 和受保护 `main` 的唯一 GHCR 发布�
 2. 只有仓库 `Beginning-NEW/PlaneGameCode` 的 `refs/heads/main` push 且 `verify` 成功后，`publish` job 才获得 job-scoped `packages: write`。它重新核对当前 main SHA，按完整 SHA 构建、smoke、推送 GHCR，并解析不可变 manifest digest。
 3. Actions 上传唯一的 `release-candidate-<SHA>` artifact；其中记录 repository、ref、完整 SHA、workflow path、run id/attempt/number、应用 digest 和网关 digest。该 artifact 只是候选声明，不是部署授权。
 4. GitHub repository webhook 只把已完成的 `workflow_run` 的 `head_sha`、`id` 和 `run_attempt` 映射到 Jenkins 参数。参数一律视为不可信。`verify-candidate.sh` 用 GitHub API 重新验证成功结论、push/main、源仓库、workflow path、完整 SHA、artifact 内容和当前受保护 main HEAD。
-5. Jenkins 在第一次验证后进入 `plane-game-production-cd` 显式锁，部署前再次验证 API、artifact、SCM `FETCH_HEAD` 和资源门禁。`disableConcurrentBuilds` 与主机 `flock` 是额外两层串行保护；Actions run id 单调标记阻止旧候选覆盖新版本。
+5. Jenkins 在第一次验证后进入 `plane-game-production-cd` 显式锁，部署前再次验证 API、artifact、SCM `FETCH_HEAD` 和资源门禁。`disableConcurrentBuilds` 与主机 `flock` 是额外两层串行保护；同一 workflow 单调递增的 Actions `run_number` 标记阻止旧候选覆盖新版本，`run_id` 只用于唯一标识 run。
 
 任何仓库/ref/SHA/run attempt/digest 不一致、main 已前移、artifact 过期或重复、API 不可用，都必须失败关闭，不能手工覆盖参数继续。
 
@@ -45,7 +45,7 @@ GitHub Actions 是 PR/main 重型 CI 和受保护 `main` 的唯一 GHCR 发布�
 | --- | --- | --- |
 | `plane-github-scm-read` | GitHub App/PAT，仅该仓库 `metadata:read`、`contents:read` | main-only SCM source；PR folder 不存在 |
 | `plane-github-actions-read` | GitHub App token 或可轮换 fine-grained PAT，仅该仓库 `metadata:read`、`contents:read`、`actions:read` | 仅 `Serialized production CD` 校验块 |
-| `plane-ghcr-pull` | 专用机器人用户名 + 可轮换 token，仅目标 package `read:packages` | 仅 rootless agent 的 pull/deploy 块 |
+| `plane-ghcr-pull` | 专用机器账号用户名 + 可轮换 PAT (classic)，仅 `read:packages` 且账号仅有目标 package read | 仅 rootless agent 的 pull/deploy 块 |
 | `plane-github-webhook-secret` | 高熵 webhook HMAC secret | GitHub webhook 与 Jenkins trigger 配置；不注入 Pipeline |
 
 `plane-ghcr-pull` 不能使用某次 Actions 的 `GITHUB_TOKEN`，因为该 token 是 run-scoped 且会过期。若私有 package 实际要求额外 repository read scope，立即停止，由安全审查确认最小扩权；不得直接授予 write/delete packages、admin、SSH 或组织级权限。每项凭据必须记录 owner、创建/到期/轮换时间和撤销步骤。
@@ -62,7 +62,7 @@ GitHub Actions 是 PR/main 重型 CI 和受保护 `main` 的唯一 GHCR 发布�
 
 Jenkins checkout 必须是 candidate SHA，且 `origin/main` 与 GitHub API 当前 main 都等于该 SHA。`deploy-local.sh` 从这个已验证 Git object 生成 `compose.yaml` 和 `deploy/` 的 run-specific source，使用临时 `DOCKER_CONFIG` 登录 GHCR，按 `repository@digest` 拉取应用和固定 gateway digest，随后调用现有 `deploy/promote.sh`。
 
-`promote.sh` 持有主机 `flock`、拒绝较旧 Actions run id、保存上一份 source，并调用 `deploy.sh`。部署脚本验证 OCI revision label、digest、容器健康、回环 `/healthz`、首页和 `version.json`。`version.json` 必须是 JSON object，且其顶层 `sha` 精确等于批准的完整 SHA；substring 或嵌套字段不通过。
+`promote.sh` 持有主机 `flock`、拒绝同一 workflow 中较旧或已激活的 Actions `run_number`、保存上一份 source，并调用 `deploy.sh`。`run_attempt` 只验证候选身份；已激活 run number 的重跑不得覆盖当前版本。部署脚本验证 OCI revision label、digest、容器健康、回环 `/healthz`、首页和 `version.json`。`version.json` 必须是 JSON object，且其顶层 `sha` 精确等于批准的完整 SHA；substring 或嵌套字段不通过。
 
 候选失败时，首次发布只清理本轮拥有的容器/网络/route；更新失败恢复上一 source 并调用 `rollback.sh` 回到记录的 `previous_healthy_sha`。恢复校验失败必须输出 `ALERT` 并保持 Jenkins build failed；不得因为旧版本恢复成功而把新发布标记成功。
 
