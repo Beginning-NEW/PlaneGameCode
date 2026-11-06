@@ -51,14 +51,15 @@ pipeline {
                 script: 'bash ops/jenkins/verify-candidate.sh "$CANDIDATE_SHA" "$ACTIONS_RUN_ID" "$ACTIONS_RUN_ATTEMPT"',
                 returnStdout: true
               ).trim().split('\\t') as List
-              if (verified.size() != 3 || !(verified[0] ==~ /sha256:[0-9a-f]{64}/) ||
+              if (verified.size() != 4 || !(verified[0] ==~ /sha256:[0-9a-f]{64}/) ||
                   !(verified[1] ==~ /nginxinc\/nginx-unprivileged@sha256:[0-9a-f]{64}/) ||
-                  !(verified[2] ==~ /[1-9][0-9]*/)) {
+                  !(verified[2] ==~ /[1-9][0-9]*/) || !(verified[3] ==~ /[1-9][0-9]*/)) {
                 error('Trusted Actions handoff returned invalid release metadata')
               }
               env.IMAGE_DIGEST = verified[0]
               env.GATEWAY_IMAGE = verified[1]
               env.ACTIONS_RUN_NUMBER = verified[2]
+              env.VERIFIED_RUN_ATTEMPT = verified[3]
             }
           }
           sh 'bash ops/jenkins/resource-gate.sh'
@@ -68,15 +69,9 @@ pipeline {
           ]) {
             sh '''
               set -eu
-              verified=$(bash ops/jenkins/verify-candidate.sh "$CANDIDATE_SHA" "$ACTIONS_RUN_ID" "$ACTIONS_RUN_ATTEMPT")
-              expected=$(printf '%s\t%s\t%s' "$IMAGE_DIGEST" "$GATEWAY_IMAGE" "$ACTIONS_RUN_NUMBER")
-              test "$verified" = "$expected"
-              git fetch --no-tags origin refs/heads/main
-              test "$(git rev-parse FETCH_HEAD)" = "$CANDIDATE_SHA"
-              bash ops/jenkins/resource-gate.sh
               bash ops/jenkins/deploy-local.sh \
                 "$CANDIDATE_SHA" "$IMAGE_REPOSITORY" "$IMAGE_DIGEST" "$DEPLOY_PORT" \
-                "$ACTIONS_RUN_ID" "$GATEWAY_IMAGE"
+                "$ACTIONS_RUN_ID" "$ACTIONS_RUN_NUMBER" "$ACTIONS_RUN_ATTEMPT" "$GATEWAY_IMAGE"
             '''
           }
         }

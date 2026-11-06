@@ -28,6 +28,7 @@ jq -e \
   --arg run_attempt "$run_attempt" '
     (.id | tostring) == $run_id and
     (.run_attempt | tostring) == $run_attempt and
+    (.run_number | type == "number" and . > 0) and
     .name == "Checks" and
     .path == ".github/workflows/checks.yml" and
     .event == "push" and
@@ -38,6 +39,8 @@ jq -e \
     .repository.full_name == $repository and
     .head_repository.full_name == $repository
   ' "$work/run.json" >/dev/null
+api_run_number=$(jq -r '.run_number' "$work/run.json")
+[[ "$api_run_number" =~ ^[1-9][0-9]*$ && ${#api_run_number} -le 15 ]] || exit 1
 
 curl -fsS "${auth[@]}" "$api/actions/runs/$run_id/artifacts?per_page=100" > "$work/artifacts.json"
 artifact_name="release-candidate-$sha"
@@ -55,6 +58,7 @@ jq -e \
   --arg sha "$sha" \
   --arg run_id "$run_id" \
   --arg run_attempt "$run_attempt" \
+  --arg run_number "$api_run_number" \
   --arg image "$expected_image" '
     .schema == 1 and
     .repository == $repository and
@@ -64,10 +68,10 @@ jq -e \
     .workflow_path == ".github/workflows/checks.yml" and
     (.run_id | tostring) == $run_id and
     (.run_attempt | tostring) == $run_attempt and
+    (.run_number | tostring) == $run_number and
     .image_repository == $image and
     (.image_digest | test("^sha256:[0-9a-f]{64}$")) and
-    (.gateway_image | test("^nginxinc/nginx-unprivileged@sha256:[0-9a-f]{64}$")) and
-    (.run_number | type == "number" and . > 0)
+    (.gateway_image | test("^nginxinc/nginx-unprivileged@sha256:[0-9a-f]{64}$"))
   ' "$work/candidate/release-candidate.json" >/dev/null
 
 curl -fsS "${auth[@]}" "$api/git/ref/heads/main" > "$work/main.json"
@@ -75,5 +79,4 @@ curl -fsS "${auth[@]}" "$api/git/ref/heads/main" > "$work/main.json"
 
 image_digest=$(jq -r .image_digest "$work/candidate/release-candidate.json")
 gateway_image=$(jq -r .gateway_image "$work/candidate/release-candidate.json")
-run_number=$(jq -r .run_number "$work/candidate/release-candidate.json")
-printf '%s\t%s\t%s\n' "$image_digest" "$gateway_image" "$run_number"
+printf '%s\t%s\t%s\t%s\n' "$image_digest" "$gateway_image" "$api_run_number" "$run_attempt"

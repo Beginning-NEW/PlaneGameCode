@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import { access, readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [common, deploy, rollback, checks, compose, promote] = await Promise.all([
+const [common, deploy, rollback, checks, compose, promote, releaseOrder] = await Promise.all([
   readFile(new URL('../deploy/common.sh', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/deploy.sh', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/rollback.sh', import.meta.url), 'utf8'),
   readFile(new URL('../.github/workflows/checks.yml', import.meta.url), 'utf8'),
   readFile(new URL('../compose.yaml', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/promote.sh', import.meta.url), 'utf8'),
+  readFile(new URL('../deploy/check-release-order.sh', import.meta.url), 'utf8'),
 ]);
 
 test('deployment preflight is read-only and pins the approved revision and digest', () => {
@@ -33,8 +34,9 @@ test('first-release cleanup and rollback remain scoped to plane-game state', () 
   assert.match(rollback, /restore_release_gateway_config/);
   assert.match(rollback, /duration_seconds/);
   assert.match(promote, /trap failed EXIT/);
-  assert.match(promote, /Stale run .* cannot supersede run/);
-  assert.match(promote, /incoming\/\$sha-\$run/);
+  assert.match(releaseOrder, /Stale run number .* cannot supersede/);
+  assert.match(releaseOrder, /rerun attempt .* cannot supersede/);
+  assert.match(promote, /incoming\/\$sha-\$run-\$attempt/);
 });
 
 test('Checks is heavy CI and protected-main-only GHCR publication', () => {

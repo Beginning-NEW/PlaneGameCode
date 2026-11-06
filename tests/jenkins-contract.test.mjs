@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [pipeline, verify, gate, localDeploy, docs, checks] = await Promise.all([
+const [pipeline, verify, gate, localDeploy, promote, docs, checks] = await Promise.all([
   readFile(new URL('../Jenkinsfile', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/verify-candidate.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/resource-gate.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/deploy-local.sh', import.meta.url), 'utf8'),
+  readFile(new URL('../deploy/promote.sh', import.meta.url), 'utf8'),
   readFile(new URL('../RUNBOOK.md', import.meta.url), 'utf8'),
   readFile(new URL('../.github/workflows/checks.yml', import.meta.url), 'utf8'),
 ]);
@@ -52,7 +53,7 @@ test('GHCR pull uses a distinct sustainable read credential and temporary Docker
   assert.match(localDeploy, /mktemp -d .*docker-auth/);
   assert.match(localDeploy, /trap cleanup EXIT/);
   assert.match(localDeploy, /docker pull "\$repository@\$digest"/);
-  assert.match(localDeploy, /expected_version=\$\(printf '\{"sha":"%s"\}' "\$sha"\)/);
+  assert.match(promote, /expected_version=\$\(printf '\{"sha":"%s"\}' "\$sha"\)/);
   assert.match(localDeploy, /deploy\/promote[.]sh/);
   assert.doesNotMatch(`${pipeline}\n${verify}\n${gate}\n${localDeploy}\n${docs}`, /ACR_|aliyuncs/i);
   assert.doesNotMatch(localDeploy, /GITHUB_TOKEN/);
