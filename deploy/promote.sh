@@ -11,7 +11,7 @@ sha="$1"; repo="$2"; digest="$3"; port="$4"; run="$5"; gateway_image="$6"
 export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
 docker info --format '{{json .SecurityOptions}}' | grep -q rootless || { echo 'Rootless Docker is required' >&2; exit 1; }
 root="$HOME/plane-game"
-stage="$root/incoming/$sha"
+stage="$root/incoming/$sha-$run"
 [[ "$PWD" == "$root" && -f "$stage/compose.yaml" && -f "$stage/deploy/deploy.sh" ]] || exit 1
 [[ -z "$(find "$stage" -type l -print -quit)" ]] || { echo 'Source archive contains a symlink' >&2; exit 1; }
 "$stage/deploy/plane-preflight"

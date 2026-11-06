@@ -1,126 +1,85 @@
-# PlaneGameCode 运维手册（发布候选；未上线）
+# PlaneGameCode GitHub Actions + Jenkins CD 迁移手册（候选，未上线）
 
-## 组件和边界
+## 状态与边界
 
-单服务静态页面由非特权 Nginx 容器提供，专用 Compose 网关仅绑定经审计的 `127.0.0.1:APP_PORT`。网关把流量转给 `plane-game-<完整 SHA>` 容器；候选和上一健康版本可并存。既有生产 Nginx、根域、www、DNS、证书都不由这些脚本修改。单服务的 GitHub Actions、Compose、Nginx 和健康检查满足演练范围，无需 K8s/Jenkins/Nacos/Apollo。
+本候选以 GitHub PR #2 的完整 head `c0c8d89e6306148c3437b1ef18d74b72b13d8edb` 为基线整合。它只交付离线代码、配置和测试：没有安装 Jenkins、没有连接或修改目标机、没有拉取/部署生产镜像，也没有变更 Nginx、DNS、TLS 或 `www`。
 
-## 发布前门禁与不可变候选
+GitHub Actions 是 PR/main 重型 CI 和受保护 `main` 的唯一 GHCR 发布者。Jenkins 只在既有 Ubuntu 主机的受限执行器上做轻量 CD、健康/version 校验和失败回滚；不运行 pnpm、Playwright、Docker build 或 push。旧 `.github/workflows/deploy.yml` 已删除，不能与 Jenkins 同时恢复或启用。
 
-Operations Lead 先做目标服务器的只读审计：端口、现有容器、专属 Nginx 配置与 `www` 基线；`APP_PORT` 只能使用这份审计中记录的空闲 `127.0.0.1` 端口，不能从开发机或猜测值取得。在目标机放置经审查的仓库版本，并准备 Docker Engine、Compose、curl、Bash、`sha256sum` 和已拉取的不可变镜像。只通过受控凭据通道配置 `DEPLOY_*` 等；仓库不保存值。
+## 可信交接链
 
-同一候选必须先由 QA 以完整 Git SHA 和镜像 digest 签署，再由 Operations Lead 复审服务器审计和演练记录；两项结论齐备前，CEO 不得批准公开切换。GitHub Actions `Checks` 面向 PR/main；`Controlled deployment` 在 main push CI 成功后自动触发，须经 `production` 环境保护规则批准。
+1. `.github/workflows/checks.yml` 对 PR 和 `main` 运行 lint、format、unit、build、Playwright、容器健康和版本 smoke。PR job 只有 `contents: read`，不绑定 GHCR write、Jenkins、SSH 或部署凭据。
+2. 只有仓库 `Beginning-NEW/PlaneGameCode` 的 `refs/heads/main` push 且 `verify` 成功后，`publish` job 才获得 job-scoped `packages: write`。它重新核对当前 main SHA，按完整 SHA 构建、smoke、推送 GHCR，并解析不可变 manifest digest。
+3. Actions 上传唯一的 `release-candidate-<SHA>` artifact；其中记录 repository、ref、完整 SHA、workflow path、run id/attempt/number、应用 digest 和网关 digest。该 artifact 只是候选声明，不是部署授权。
+4. GitHub repository webhook 只把已完成的 `workflow_run` 的 `head_sha`、`id` 和 `run_attempt` 映射到 Jenkins 参数。参数一律视为不可信。`verify-candidate.sh` 用 GitHub API 重新验证成功结论、push/main、源仓库、workflow path、完整 SHA、artifact 内容和当前受保护 main HEAD。
+5. Jenkins 在第一次验证后进入 `plane-game-production-cd` 显式锁，部署前再次验证 API、artifact、SCM `FETCH_HEAD` 和资源门禁。`disableConcurrentBuilds` 与主机 `flock` 是额外两层串行保护；Actions run id 单调标记阻止旧候选覆盖新版本。
 
-发布输入是五个显式值：
+任何仓库/ref/SHA/run attempt/digest 不一致、main 已前移、artifact 过期或重复、API 不可用，都必须失败关闭，不能手工覆盖参数继续。
 
-```text
-FULL_SHA IMAGE_REPOSITORY APPROVED_IMAGE_DIGEST AUDITED_LOOPBACK_PORT GATEWAY_IMAGE
-```
+## 启用前资源 No-Go
 
-`APPROVED_IMAGE_DIGEST` 必须是 `sha256:<64-hex>`。脚本只接受 `IMAGE_REPOSITORY@APPROVED_IMAGE_DIGEST`，并验证其 OCI `org.opencontainers.image.revision` 标签等于 `FULL_SHA`；仅有可变的 `:SHA` 标签不足以通过检查。网关 `GATEWAY_IMAGE` 必须为 `nginxinc/nginx-unprivileged@sha256:<64-hex>`，渲染后的 Compose 只有这一个镜像。正在运行的网关镜像 ID 若与该 digest 不符，更新和回滚均停止，等待独立审查的网关迁移。
+运维基线目前约为 7.1 GiB 总内存、2.9 GiB `MemAvailable`、无 swap、根盘约 41 GiB 可用，并承载 MSSQL、Postgres、Redis、new-api 等既有负载。2.9 GiB 低于入场线，因此当前禁止安装/启用 Jenkins 或执行部署。
 
-部署工作流在推送后解析 manifest digest，拉取该 digest，再把同一组值传给部署脚本。
+只有 Operations 对同一主机给出以下连续 24 小时证据后，才可提出新的启用审批：
 
-## 只读预检与发布
+- p5 `MemAvailable >= 3.5 GiB`；
+- p95 CPU busy 不超过 4 核中的 2 核；
+- 根盘可用空间 `>= 35 GiB`；
+- 既有服务健康、延迟和 IO 无回归，候选回环端口仍空闲；
+- Aegis/替代安全基线和 rootless Docker 风险有已批准结论。
 
-手动只读预检：
+建议 controller 为 0 executors，systemd/cgroup 上限 `MemoryMax=1024MiB`、`CPUQuota=50%`；单一 `plane-game-cd-rootless` agent 使用独立 `plane-preflight` 用户，上限 `MemoryMax=384MiB`、`CPUQuota=25%`。agent 不得属于 docker/sudo/wheel/admin 组，只能访问其自身 `/run/user/<uid>/docker.sock`；controller 不得访问任何 Docker socket 或部署凭据。
 
-```bash
-./deploy/deploy.sh --dry-run FULL_SHA IMAGE_REPOSITORY APPROVED_IMAGE_DIGEST AUDITED_LOOPBACK_PORT GATEWAY_IMAGE
-```
+`ops/jenkins/resource-gate.sh` 在每次 CD 前后校验执行器身份、rootless preflight、瞬时 `MemAvailable >= 3.5 GiB`、磁盘 `>= 35 GiB` 和执行器 cgroup 上限。以下任一条件出现即停止试运行、禁用 job 并由 Operations 评估；不得自动重试：
 
-预检检查参数、Docker daemon、Compose 语法、已在本机的 immutable image digest + revision label，以及已存在网关的 Docker 健康状态和本地 `GET /healthz`。没有网关时只检查经审计端口是否可用。它**不会** pull/run/start/stop/remove/reload/rename 容器，不创建网络，也不写 `runtime/` 或部署配置；因此不会替代实际容器或网关演练。网关 Nginx 语法在实际切换前通过现有专属 gateway 容器的 `nginx -t` 验证。
+- `MemAvailable < 2 GiB` 持续 5 分钟，或任何一次 `< 1.5 GiB`；
+- OOM/进程被杀、根盘可用 `< 30 GiB`；
+- 既有 MSSQL/Postgres/Redis/new-api 的健康、延迟、CPU/IO 有回归；
+- rootless socket、回环端口、Aegis/替代安全基线或凭据边界不再成立。
 
-正式命令去掉 `--dry-run`。候选以 digest 启动、等待 Docker 健康状态，并校验容器内 `version.json` 的 SHA 后才写专属路由。每次成功发布写入：
+## Jenkins 凭据与权限
 
-- `runtime/releases/<SHA>/release.env`：SHA、镜像仓库/digest、网关镜像 digest、配置 revision、gateway 配置 digest、健康状态和时间；
-- `runtime/releases/<SHA>/gateway.conf`：可验证的上一健康 gateway 配置；
-- `runtime/deployment-snapshots/<UTC>-<SHA>/state.env`：部署前路由/config 快照、网关镜像 digest、结果和时间。
+所有凭据只存在于 Jenkins 受限 folder/credential store；不得写入仓库、参数、console 或 artifact。
 
-首次发布没有 `previous_healthy_sha` 时，如果 gateway 启动或切换校验失败，脚本只删除本轮 `plane-game-<SHA>` 容器、必要时删除本轮创建的 `plane-game_default` 网络和 gateway，并撤销本轮专属 `runtime/active/upstream.inc`。它不会恢复空 upstream，也不会操作 www、根域、其他 Nginx server block 或其他 Compose 项目。
+| Credential ID | 形式与最小权限 | 可见范围 |
+| --- | --- | --- |
+| `plane-github-scm-read` | GitHub App/PAT，仅该仓库 `metadata:read`、`contents:read` | main-only SCM source；PR folder 不存在 |
+| `plane-github-actions-read` | GitHub App token 或可轮换 fine-grained PAT，仅该仓库 `metadata:read`、`contents:read`、`actions:read` | 仅 `Serialized production CD` 校验块 |
+| `plane-ghcr-pull` | 专用机器人用户名 + 可轮换 token，仅目标 package `read:packages` | 仅 rootless agent 的 pull/deploy 块 |
+| `plane-github-webhook-secret` | 高熵 webhook HMAC secret | GitHub webhook 与 Jenkins trigger 配置；不注入 Pipeline |
 
-## 健康、日志与故障
+`plane-ghcr-pull` 不能使用某次 Actions 的 `GITHUB_TOKEN`，因为该 token 是 run-scoped 且会过期。若私有 package 实际要求额外 repository read scope，立即停止，由安全审查确认最小扩权；不得直接授予 write/delete packages、admin、SSH 或组织级权限。每项凭据必须记录 owner、创建/到期/轮换时间和撤销步骤。
 
-- `curl -fsS http://127.0.0.1:APP_PORT/healthz` 应返回 `{"status":"ok"}`；`curl -I http://127.0.0.1:APP_PORT/` 检查首页。
-- `docker compose ps`、`docker inspect -f '{{.State.Health.Status}}' plane-game-FULL_SHA` 查看状态；`docker compose logs --tail=100 gateway`、`docker logs --tail=100 plane-game-FULL_SHA` 查看日志。启动事件记录端口和版本；Nginx access/error 可由容器日志查看。
-- 真实生产需由 Operations Lead 单独验证子域解析、TLS、专属 Nginx `nginx -t`、证书续期 `certbot certificates` 和前后 www 探针。异常时立即停止本应用变更，通知 CTO 与 Operations Lead；现有域名和服务不由本脚本操作。
+## Jenkins 配置（仅在资源与安全门禁获批后）
 
-## 故障回滚
+1. 建立只发现受保护 `main` 的受限 folder/job；关闭 PR discovery、fork Jenkinsfile 和 synthetic merge builds。controller 0 executors，job 固定 label `plane-game-cd-rootless`。
+2. 安装并锁定 Pipeline、GitHub Branch Source、Credentials Binding、Lockable Resources 和 Generic Webhook Trigger 的受审版本。插件安装本身不属于本候选。
+3. job 设置审计后的 `DEPLOY_PORT`，不提供 branch/SHA/digest/host 的人工 override。SCM 使用 `plane-github-scm-read`。
+4. repository webhook 仅订阅 `workflow_run`，验证 `plane-github-webhook-secret` HMAC；只在 `action=completed` 且 workflow name 为 `Checks` 时触发。映射 `workflow_run.head_sha -> CANDIDATE_SHA`、`workflow_run.id -> ACTIONS_RUN_ID`、`workflow_run.run_attempt -> ACTIONS_RUN_ATTEMPT`。
+5. 先以禁止部署的验证模式检查 webhook/API/artifact；独立安全、QA、Operations 和 CTO 审查均通过后，才允许启用 CD stage。不要恢复 `.github/workflows/deploy.yml`。
 
-读取 `runtime/previous_healthy_sha`，确认其与发布记录一致，然后执行：
+## 同机 rootless 部署与回滚
 
-```bash
-./deploy/rollback.sh --dry-run PREVIOUS_HEALTHY_SHA AUDITED_LOOPBACK_PORT
-./deploy/rollback.sh PREVIOUS_HEALTHY_SHA AUDITED_LOOPBACK_PORT
-```
+Jenkins checkout 必须是 candidate SHA，且 `origin/main` 与 GitHub API 当前 main 都等于该 SHA。`deploy-local.sh` 从这个已验证 Git object 生成 `compose.yaml` 和 `deploy/` 的 run-specific source，使用临时 `DOCKER_CONFIG` 登录 GHCR，按 `repository@digest` 拉取应用和固定 gateway digest，随后调用现有 `deploy/promote.sh`。
 
-回滚**不要求当前版本健康**：当前故障正是触发条件。它要求并验证上一健康版本的 release record、镜像 digest/revision label、保存的 gateway 配置 digest、上一容器健康和 `version.json`；只有这些真实存在才会恢复保存的专属 gateway 配置并切换路由。任一校验或切换失败都会恢复本次操作前的专属 route/config，不触及其他服务。成功输出包含起止 SHA、digest、配置 revision、健康状态、UTC 时间与 `duration_seconds`。
+`promote.sh` 持有主机 `flock`、拒绝较旧 Actions run id、保存上一份 source，并调用 `deploy.sh`。部署脚本验证 OCI revision label、digest、容器健康、回环 `/healthz`、首页和 `version.json`。`version.json` 必须是 JSON object，且其顶层 `sha` 精确等于批准的完整 SHA；substring 或嵌套字段不通过。
 
-记录操作者、触发原因、命令输出、`/healthz`、首页、两端 SHA/digest/config revision 和恢复耗时；由 Operations Lead 单独完成 www 前后只读探针。若上一容器或其记录不健康，保持现状并升级给 Operations Lead/CTO。证书续期和生产站点配置由单独运维任务负责。
+候选失败时，首次发布只清理本轮拥有的容器/网络/route；更新失败恢复上一 source 并调用 `rollback.sh` 回到记录的 `previous_healthy_sha`。恢复校验失败必须输出 `ALERT` 并保持 Jenkins build failed；不得因为旧版本恢复成功而把新发布标记成功。
 
-## 非生产演练记录
+## 必备证据与最终判定
 
-在隔离的 Docker 主机/目录中，用与 QA 签署相同的 SHA + digest 依次记录以下两条命令及完整输出：
+每次真实演练至少记录：
 
-1. 首发故障：让候选在健康或 route 校验阶段失败；确认 `runtime/deployment-snapshots/.../state.env` 是 `outcome=reverted`，`runtime/active/upstream.inc` 不存在（若部署前不存在），本轮容器、gateway 和本轮网络均已删除。
-2. 更新故障回退：保留一个真实 `previous_healthy_sha` 的健康容器和 release record，使当前版本的应用健康检查失败；执行回滚并确认输出的 `previous_health=healthy`、`duration_seconds`、回退后的 `/healthz`/`version.json`，以及保存的 gateway config digest。
+- Actions run URL/id/attempt/number、workflow path、repository、ref、完整 SHA、结论；
+- GHCR repository、应用 digest、gateway digest、artifact id/expiry；
+- Jenkins build URL/number、job/folder、agent identity、锁等待/获得时间；
+- 门禁 UTC、24 小时 p5 memory/p95 CPU、瞬时 memory、磁盘、cgroup limits、既有服务前后健康；
+- 部署前后 active/previous SHA、`/healthz`、首页、顶层 `version.json.sha`、Compose 状态；
+- 故障注入点、rollback target、恢复耗时、最终 route/source/config 和任何 `ALERT`；
+- 公网 HTTPS 与现有 `www` 前后对照（由独立 Operations/QA 执行）。
 
-演练记录必须包含 SHA、digest、配置 revision、健康状态、回滚耗时和 `docker compose ps`；不把预检输出误称为演练。任何实际服务器操作仍只限本应用 Docker/回环端口/专属站点，且在 CEO Go/No-Go 前不得公开切换。
+本地契约测试、Jenkinsfile 静态检查和本手册只能证明候选设计，不能证明真实 Jenkins、目标机或公网 PASS。缺少任一真实证据时结论必须保持 BLOCKED/No-Go。
 
-## 当前限制
+## 迁移回退
 
-离线候选不代表上线：还需真实 CI、授权、独立 QA/首用验收、运维基线、DNS/TLS、专属站点、真实部署与回滚证据。告警入口为受控部署环境的工作流失败和 Operations Lead 的容器健康巡检；密钥仅在 GitHub Environment 和 Paperclip Secrets 管理，必要时按运维账户流程轮换。
-
-## Automatic CD (pending production verification)
-
-A successful `Checks` **push to protected main** starts `Controlled deployment` through
-`workflow_run`. Failed CI and pull-request checks do not build or publish a release.
-The build job rechecks the exact main commit, runs the project checks and browser
-tests, builds a container for the full commit SHA, checks container health,
-homepage and the exact `version.json` SHA, pushes the image to GHCR and records
-its immutable digest. It archives `compose.yaml` and `deploy/` from that SHA.
-The production job waits for the GitHub `production` environment reviewers,
-rechecks the current main SHA, verifies the archived checksum locally and on the
-host. It streams the archived executable `deploy/plane-preflight` via pinned-key,
-public-key-only SSH before transfer, GHCR login or pull. It then passes SHA,
-application and gateway digests, port and GitHub run number to the promoter.
-
-Operations must configure `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`,
-`DEPLOY_KNOWN_HOSTS` as production environment secrets, and
-`DEPLOY_PORT` as a production variable after independent host preflight.
-`DEPLOY_KNOWN_HOSTS` must be a pinned, independently verified host key, never
-a fresh `ssh-keyscan` result obtained in the workflow. The dedicated deploy user
-must be the fixed `plane-preflight` account, with no sudo entitlement,
-privileged groups or writable rootful Docker socket. The host gate verifies the
-non-root UID, home, and the same account's rootless Docker daemon at
-`/run/user/$(id -u)/docker.sock`; rootful Docker, root login and free choice
-of host port are rejected. The only application listener is the audited
-`127.0.0.1:DEPLOY_PORT`. Production Nginx, DNS and TLS remain Operations work.
-Keep environment review and the first public cutover gated by CEO approval; an
-automatic workflow trigger does not mean an unattended public release.
-
-The deploy job grants `packages: read` to its own run-scoped `GITHUB_TOKEN` and sends it only to the audited SSH account over the verified host key. The account uses a temporary `DOCKER_CONFIG` for GHCR login and pull, and removes it on success or failure. A separate long-lived `GHCR_READ_TOKEN` secret or login name is not configured. If a real run demonstrates that this repository package denies that token, stop and request the smallest repository-scoped `read:packages` credential before another deployment attempt.
-
-The remote account uses `$HOME/plane-game` as its dedicated application root.
-It verifies the source archive checksum before extraction, saves the previous
-source, rejects older GitHub run numbers, applies this commit's Compose and
-scripts, and calls `deploy.sh`. The deployment verifies rootless digest binding and the immutable Compose gateway
-reference, records that gateway digest in release and rollback state,
-container health, the loopback `/healthz`, homepage and exact `version.json`
-before recording a healthy release. On failure it restores the previous source
-and validates the previous route; incomplete recovery emits `ALERT` and fails
-the Actions job. First-release failures use resource ownership labels to remove
-only this application's new containers, network and route. The local run marker
-does not decrease on rollback. A failed Actions run must be investigated by
-Operations and the CTO before another release.
-
-To finish acceptance, capture the real Actions run URL, SHA, immutable digest,
-host and public before/after checks, failure drill and recovery records for the
-same approved candidate. Local tests and this runbook do not substitute for
-an actual production-environment review or host exercise.
-
-The build job also requires repository variables `NODE_BASE_IMAGE` and
-`NGINX_BASE_IMAGE` with independently reviewed sha256 digests for the
-specified Node and Nginx image tags. It builds the fixed linux/amd64 platform
-from those digests and refuses to publish if either pin is missing. Local
-development and the earlier CI smoke still use the Dockerfile tag defaults;
-production release builds always supply immutable base image references.
+Jenkins 首次启用前的回退是禁用/删除 main-only job 和 webhook，并撤销四项 Jenkins/GitHub 凭据；Actions `Checks` 重型 CI 和 GHCR 发布可继续，但没有自动 CD。不得用恢复旧 `deploy.yml` 作为临时回退；若未来确需恢复 Actions CD，必须作为独立变更重新安全/QA 审查，并先禁用 Jenkins，保证始终只有一条自动发布路径。

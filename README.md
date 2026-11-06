@@ -8,4 +8,4 @@ Node.js 24、pnpm 10；执行 `pnpm install --frozen-lockfile`、`pnpm dev`，�
 
 开发服务器和容器均提供 `/healthz`，用 `curl -fsS http://127.0.0.1:4173/healthz` 复核。容器：`docker build -t plane-game:local .`；`docker run --rm -p 127.0.0.1:4180:8080 plane-game:local`，再用 `curl -fsS http://127.0.0.1:4180/healthz` 和 `docker inspect` 查看健康。发布镜像必须使用完整不可变 Git SHA 标签；专用回环网关 Compose、预检、部署和回滚见 [RUNBOOK](RUNBOOK.md)。
 
-工作流 `.github/workflows/checks.yml` 在 PR/main 校验并运行容器 smoke；main 的 CI 成功后自动启动的受保护环境部署工作流仍待授权配置和真实验证，当前候选未上线，未声称远端 CI 已执行。架构采用静态 Web、Docker Compose 和 Nginx，不需要 K8s、Jenkins、Nacos、Apollo。
+工作流 `.github/workflows/checks.yml` 在 PR/main 运行重型校验与容器 smoke，并仅在受保护 main 成功后发布 GHCR 不可变 digest；Jenkins 候选仅负责同机 rootless 轻量 CD、健康/version 校验和回滚。当前资源门禁未满足，未安装 Jenkins、未部署、未声称远端 CI/Jenkins 已执行；迁移与凭据边界见 [RUNBOOK](RUNBOOK.md)。

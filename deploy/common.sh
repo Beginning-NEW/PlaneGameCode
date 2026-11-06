@@ -79,8 +79,22 @@ wait_healthy() {
 }
 
 verify_candidate_version() {
-  local container="$1"
-  docker exec "$container" wget -q -O - http://127.0.0.1:8080/version.json | grep -Fq "$RELEASE_SHA"
+  local container="$1" payload
+  payload=$(docker exec "$container" wget -q -O - http://127.0.0.1:8080/version.json) || return 1
+  VERSION_PAYLOAD="$payload" EXPECTED_RELEASE_SHA="$RELEASE_SHA" python3 - <<'PY'
+import json
+import os
+import sys
+
+try:
+    document = json.loads(os.environ["VERSION_PAYLOAD"])
+except (KeyError, json.JSONDecodeError):
+    sys.exit(1)
+
+expected = os.environ.get("EXPECTED_RELEASE_SHA")
+if not isinstance(document, dict) or document.get("sha") != expected:
+    sys.exit(1)
+PY
 }
 
 verify_gateway_route() {
@@ -226,6 +240,7 @@ preflight_readonly() {
   local gateway health
   command -v docker >/dev/null || die 'docker required'
   command -v curl >/dev/null || die 'curl required'
+  command -v python3 >/dev/null || die 'python3 required for exact version.json validation'
   command -v sha256sum >/dev/null || die 'sha256sum required'
   docker info >/dev/null || die 'docker daemon unavailable'
   docker compose config -q || die 'compose syntax invalid'
