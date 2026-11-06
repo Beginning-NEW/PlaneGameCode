@@ -173,6 +173,7 @@ test('post-promote health failure restores the previous active release and order
   await writeFile(join(plane, 'compose.yaml'), 'services: {}\n');
   await writeFile(join(stage, 'compose.yaml'), 'services: {}\n');
   await copyFile(join(root, 'deploy/promote.sh'), join(stage, 'deploy/promote.sh'));
+  await copyFile(join(root, 'deploy/deployment-id.sh'), join(stage, 'deploy/deployment-id.sh'));
   await copyFile(join(root, 'deploy/check-release-order.sh'), join(stage, 'deploy/check-release-order.sh'));
   await executable(join(stage, 'deploy/plane-preflight'), '#!/usr/bin/env bash\nexit 0\n');
   await executable(join(stage, 'ops/jenkins/resource-gate.sh'), '#!/usr/bin/env bash\nexit 0\n');
@@ -254,6 +255,7 @@ test('post-CD resource gate failure restores the previous active release and ord
   await writeFile(join(plane, 'compose.yaml'), 'services: {}\n');
   await writeFile(join(stage, 'compose.yaml'), 'services: {}\n');
   await copyFile(join(root, 'deploy/promote.sh'), join(stage, 'deploy/promote.sh'));
+  await copyFile(join(root, 'deploy/deployment-id.sh'), join(stage, 'deploy/deployment-id.sh'));
   await copyFile(join(root, 'deploy/check-release-order.sh'), join(stage, 'deploy/check-release-order.sh'));
   await executable(join(stage, 'deploy/plane-preflight'), '#!/usr/bin/env bash\nexit 0\n');
   await executable(
@@ -325,7 +327,6 @@ async function runFirstReleasePostCheckFailure({ candidateDeploymentId } = {}) {
   const nextSha = '5'.repeat(40);
   const digest = `sha256:${'6'.repeat(64)}`;
   const gateway = `nginxinc/nginx-unprivileged@sha256:${'7'.repeat(64)}`;
-  const deploymentId = `${nextSha.slice(0, 12)}-20261106T000000Z-123`;
   const candidateId = 'a'.repeat(64);
   const gatewayId = 'b'.repeat(64);
   const networkId = 'c'.repeat(64);
@@ -338,6 +339,7 @@ async function runFirstReleasePostCheckFailure({ candidateDeploymentId } = {}) {
   await mkdir(dockerState);
   await writeFile(join(stage, 'compose.yaml'), 'services: {}\n');
   await copyFile(join(root, 'deploy/promote.sh'), join(stage, 'deploy/promote.sh'));
+  await copyFile(join(root, 'deploy/deployment-id.sh'), join(stage, 'deploy/deployment-id.sh'));
   await copyFile(join(root, 'deploy/check-release-order.sh'), join(stage, 'deploy/check-release-order.sh'));
   await executable(join(stage, 'deploy/plane-preflight'), '#!/usr/bin/env bash\nexit 0\n');
   await executable(
@@ -345,13 +347,15 @@ async function runFirstReleasePostCheckFailure({ candidateDeploymentId } = {}) {
     '#!/usr/bin/env bash\necho "post-cd resource gate injected failure" >&2\nexit 42\n',
   );
   await executable(join(stage, 'deploy/deploy.sh'), `#!/usr/bin/env bash
+source "$(dirname "$0")/deployment-id.sh"
+deployment_id=$(new_deployment_id "$1")
 mkdir -p "$PLANE_GAME_RUNTIME_DIR/active" "$(dirname "$PLANE_GAME_PROMOTION_CONTEXT")"
 printf '%s\\n' "$1" > "$PLANE_GAME_RUNTIME_DIR/active_sha"
 printf 'set backend\\n' > "$PLANE_GAME_RUNTIME_DIR/active/upstream.inc"
-cat > "$PLANE_GAME_PROMOTION_CONTEXT" <<'EOF'
+cat > "$PLANE_GAME_PROMOTION_CONTEXT" <<EOF
 release_sha=${nextSha}
 image_digest=${digest}
-deployment_id=${deploymentId}
+deployment_id=$deployment_id
 candidate_id=${candidateId}
 gateway_id=${gatewayId}
 network_id=${networkId}
@@ -366,15 +370,16 @@ if [[ "$1" == '-un' ]]; then printf 'plane-preflight\\n'; else printf '1001\\n';
   await executable(join(bin, 'docker'), `#!/usr/bin/env bash
 state="$MOCK_DOCKER_STATE"
 last="\${!#}"
+deployment_id=$(sed -n 's/^deployment_id=//p' "$PLANE_GAME_PROMOTION_CONTEXT")
 case "$1" in
   info) printf '["name=rootless"]\\n' ;;
   container)
     [[ "$2" == inspect && -f "$state/$last" ]] || exit 1
     if [[ "$3" == --format ]]; then
       if [[ "$last" == '${gatewayId}' ]]; then
-        printf '%s %s plane-game gateway\\n' "$last" '${deploymentId}'
+        printf '%s %s plane-game gateway\\n' "$last" "$deployment_id"
       elif [[ "$last" == '${candidateId}' ]]; then
-        printf '%s %s %s %s\\n' "$last" "$MOCK_CANDIDATE_DEPLOYMENT_ID" '${nextSha}' '${digest}'
+        printf '%s %s %s %s\\n' "$last" "\${MOCK_CANDIDATE_DEPLOYMENT_ID:-$deployment_id}" '${nextSha}' '${digest}'
       else
         exit 1
       fi
@@ -384,7 +389,7 @@ case "$1" in
     if [[ "$2" == inspect ]]; then
       [[ -f "$state/$last" ]] || exit 1
       if [[ "$3" == --format ]]; then
-        printf '%s %s plane-game default\\n' "$last" '${deploymentId}'
+        printf '%s %s plane-game default\\n' "$last" "$deployment_id"
       fi
     elif [[ "$2" == rm ]]; then
       printf 'network:%s\\n' "$last" >> "$MOCK_REMOVE_LOG"
@@ -426,7 +431,7 @@ fi
       HOME: home,
       MOCK_DOCKER_STATE: dockerState,
       MOCK_REMOVE_LOG: removeLog,
-      MOCK_CANDIDATE_DEPLOYMENT_ID: candidateDeploymentId ?? deploymentId,
+      MOCK_CANDIDATE_DEPLOYMENT_ID: candidateDeploymentId ?? '',
     },
   });
   const removed = existsSync(removeLog)

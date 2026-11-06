@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
+source "$(dirname "$0")/deployment-id.sh"
 
 dry_run=false
 if [[ "${1:-}" == --dry-run ]]; then dry_run=true; shift; fi
@@ -38,7 +39,7 @@ first_release=false
 snapshot_deployment_state "$RELEASE_SHA"
 
 container="plane-game-$RELEASE_SHA"
-deployment_id="${RELEASE_SHA:0:12}-$(date -u +%Y%m%dT%H%M%S)-$$"
+deployment_id=$(new_deployment_id "$RELEASE_SHA")
 export PLANE_GAME_DEPLOYMENT_ID="$deployment_id"
 promotion_context="${PLANE_GAME_PROMOTION_CONTEXT:-}"
 network_id=''
