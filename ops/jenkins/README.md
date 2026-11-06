@@ -8,6 +8,41 @@ GitHub must send only `workflow_run` events to the reviewed reverse-proxy route 
 
 Import `config/plane-game-job.groovy` only after review. Install `config/plane-game-webhook-gateway.service` as a template through the controller host's configuration process; do not install it directly from a checkout. Keep one gateway process under the included `flock`, keep `/var/lib/plane-game-webhook` mode `0700`, and provide the webhook secret and minimal Jenkins API token through systemd credentials. The `plane-webhook-gateway` Jenkins principal needs only Overall Read plus Item Read/Build for `plane-game/main-cd` and queue/build read needed for reconciliation. It must have no Configure/Administer, credential, agent, GHCR, Docker, or deployment-host access.
 
+The repository's canonical controller endpoint is declared in `config/jenkins-loopback-contract.env`. The reviewed controller drop-in is `config/jenkins.service.d/plane-game-limits.conf`; install it as `/etc/systemd/system/jenkins.service.d/plane-game-limits.conf` only through the approved Operations change. Run `node ops/jenkins/check-loopback-contract.mjs` before staging either template. It must report `endpoint=http://127.0.0.1:18080`, `gateway=match`, `controller=match`, and `legacy_8080=absent`.
+
+## Pre-enable loopback verification
+
+After both reviewed templates have been staged and the loopback controller smoke is running, but before enabling the gateway, webhook, or CD job, Operations must run this exact read-only check on the controller host:
+
+```bash
+set -eu
+env_value() {
+  systemctl show "$1" --property=Environment --value |
+    tr ' ' '\n' |
+    sed -n "s/^$2=//p"
+}
+
+jenkins_host=$(env_value jenkins.service JENKINS_LISTEN_ADDRESS)
+jenkins_port=$(env_value jenkins.service JENKINS_PORT)
+gateway_url=$(env_value plane-game-webhook-gateway.service JENKINS_URL)
+controller_url="http://${jenkins_host}:${jenkins_port}"
+
+printf 'effective controller=%s\n' "$controller_url"
+printf 'effective gateway=%s\n' "$gateway_url"
+test "$controller_url" = 'http://127.0.0.1:18080'
+test "$gateway_url" = "$controller_url"
+
+listener_18080=$(ss -H -ltn 'sport = :18080')
+listener_8080=$(ss -H -ltn 'sport = :8080')
+printf 'listener 18080:\n%s\n' "$listener_18080"
+printf 'listener 8080:\n%s\n' "$listener_8080"
+test "$(printf '%s\n' "$listener_18080" | sed '/^$/d' | wc -l)" -eq 1
+printf '%s\n' "$listener_18080" | awk '{print $4}' | grep -Fx '127.0.0.1:18080'
+test -z "$listener_8080"
+```
+
+Expected evidence is two identical effective URLs, each exactly `http://127.0.0.1:18080`; one `LISTEN` row whose local address is exactly `127.0.0.1:18080`; and an empty `listener 8080` section. A missing/multiple `18080` listener, any `8080` listener, a non-loopback address, or any environment mismatch is an immediate STOP/NO-GO: keep the gateway and CD job disabled and use the approved controller rollback procedure. These commands do not enable, restart, or otherwise mutate either service.
+
 A first valid delivery is reserved as `dispatching`, then durably moved to non-retryable `submitted` before the only permitted Jenkins POST. A valid same-origin numeric `201 Location` persists the queue item identity as `queued`; later signed replays only reconcile that identity through `running` and `completed`. An empty queue/build lookup is `submitted_unknown` or `queue_state_unknown`, never permission for another POST. Startup retries only a pre-submit `dispatching` row; legacy ambiguous rows migrate to `submitted`. Resolve a persistently unknown submission through operator investigation rather than deleting/resetting its row. A different delivery for the same `(run_id, run_attempt)` is acknowledged without a second queue call. Back up the SQLite database with the host state and retain the corresponding Jenkins queue/build history.
 
 - `verify-candidate.sh` treats webhook parameters as untrusted and verifies the successful GitHub Actions `Checks` push run, repository/ref/SHA/run attempt, API/artifact-matching run number, unique candidate artifact, immutable digests, and current protected-main head.

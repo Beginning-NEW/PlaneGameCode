@@ -19,7 +19,7 @@ Environment=WEBHOOK_LISTEN_HOST=127.0.0.1
 Environment=WEBHOOK_LISTEN_PORT=9080
 Environment=WEBHOOK_STATE_DB=/var/lib/plane-game-webhook/deliveries.sqlite
 Environment=WEBHOOK_SECRET_FILE=%d/webhook-secret
-Environment=JENKINS_URL=http://127.0.0.1:8080
+Environment=JENKINS_URL=http://127.0.0.1:18080
 Environment=JENKINS_USER=plane-webhook-gateway
 Environment=JENKINS_API_TOKEN_FILE=%d/jenkins-api-token
 ExecStart=/usr/bin/flock --no-fork --nonblock /run/plane-game-webhook/gateway.lock /usr/bin/node /opt/plane-game-cd/ops/jenkins/webhook-gateway.mjs
