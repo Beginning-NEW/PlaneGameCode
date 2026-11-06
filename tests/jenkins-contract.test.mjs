@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [pipeline, verify, gate, localDeploy, promote, docs, checks] = await Promise.all([
+const [pipeline, verify, gate, localDeploy, promote, docs, checks, jobDsl] = await Promise.all([
   readFile(new URL('../Jenkinsfile', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/verify-candidate.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/resource-gate.sh', import.meta.url), 'utf8'),
@@ -10,18 +10,39 @@ const [pipeline, verify, gate, localDeploy, promote, docs, checks] = await Promi
   readFile(new URL('../deploy/promote.sh', import.meta.url), 'utf8'),
   readFile(new URL('../RUNBOOK.md', import.meta.url), 'utf8'),
   readFile(new URL('../.github/workflows/checks.yml', import.meta.url), 'utf8'),
+  readFile(new URL('../ops/jenkins/config/plane-game-job.groovy', import.meta.url), 'utf8'),
 ]);
+
+function assertPinnedJenkinsJob(candidate) {
+  assert.match(candidate, /env[.]JOB_NAME != 'plane-game\/main-cd'/);
+  assert.match(candidate, /DEPLOY_PORT = '18081'/);
+  assert.doesNotMatch(candidate, /BRANCH_NAME|CHANGE_ID/);
+}
 
 test('Jenkins is main-only, lightweight, single-concurrency CD', () => {
   assert.match(pipeline, /agent \{ label 'plane-game-cd-rootless' \}/);
   assert.match(pipeline, /disableConcurrentBuilds\(abortPrevious: false\)/);
   assert.match(pipeline, /lock\(resource: 'plane-game-production-cd'/);
-  assert.match(pipeline, /env[.]BRANCH_NAME != 'main' \|\| env[.]CHANGE_ID/);
+  assertPinnedJenkinsJob(pipeline);
+  assert.match(jobDsl, /pipelineJob\('plane-game\/main-cd'\)/);
+  assert.match(jobDsl, /branch\('\*\/main'\)/);
+  assert.doesNotMatch(jobDsl, /stringParam\('DEPLOY_PORT'/);
   assert.match(pipeline, /git rev-parse FETCH_HEAD/);
   assert.match(pipeline, /verify-candidate[.]sh/);
   assert.match(pipeline, /resource-gate[.]sh/);
   for (const forbidden of ['pnpm ', 'playwright', 'docker build', 'docker push']) {
     assert.doesNotMatch(pipeline.toLowerCase(), new RegExp(forbidden));
+  }
+});
+
+test('missing or tampered job identity and deployment port fail the static contract', () => {
+  for (const mutation of [
+    pipeline.replace("env.JOB_NAME != 'plane-game/main-cd'", 'false'),
+    pipeline.replace('plane-game/main-cd', 'plane-game/untrusted-cd'),
+    pipeline.replace("DEPLOY_PORT = '18081'", ''),
+    pipeline.replace("DEPLOY_PORT = '18081'", "DEPLOY_PORT = '9999'"),
+  ]) {
+    assert.throws(() => assertPinnedJenkinsJob(mutation));
   }
 });
 

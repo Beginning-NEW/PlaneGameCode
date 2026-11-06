@@ -15,13 +15,14 @@ pipeline {
   environment {
     GITHUB_REPOSITORY = 'Beginning-NEW/PlaneGameCode'
     IMAGE_REPOSITORY = 'ghcr.io/beginning-new/planegamecode'
+    DEPLOY_PORT = '18081'
   }
   stages {
     stage('Trusted main checkout') {
       steps {
         script {
-          if (env.BRANCH_NAME != 'main' || env.CHANGE_ID) {
-            error('CD is restricted to the trusted main job; PR jobs are forbidden')
+          if (env.JOB_NAME != 'plane-game/main-cd') {
+            error('CD is restricted to the exact versioned main job')
           }
           if (!(params.CANDIDATE_SHA ==~ /[0-9a-f]{40}/) ||
               !(params.ACTIONS_RUN_ID ==~ /[1-9][0-9]*/) ||

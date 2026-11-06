@@ -4,7 +4,8 @@ set -euo pipefail
 [[ $# -eq 8 ]] || { echo 'Usage: promote.sh SHA REPOSITORY DIGEST PORT RUN_NUMBER RUN_ATTEMPT GATEWAY_IMAGE POST_CD_RESOURCE_GATE' >&2; exit 1; }
 sha="$1"; repo="$2"; digest="$3"; port="$4"; run="$5"; attempt="$6"; gateway_image="$7"; post_cd_resource_gate_ref="$8"
 [[ "$sha" =~ ^[0-9a-f]{40}$ && "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-[[ "$repo" =~ ^[a-zA-Z0-9][a-zA-Z0-9./_-]*$ && "$port" =~ ^[0-9]{4,5}$ ]] || exit 1
+[[ "$repo" =~ ^[a-zA-Z0-9][a-zA-Z0-9./_-]*$ ]] || exit 1
+[[ "$port" == 18081 ]] || { echo 'DEPLOY_PORT must be the versioned value 18081' >&2; exit 1; }
 [[ "$run" =~ ^[1-9][0-9]*$ && ${#run} -le 15 ]] || exit 1
 [[ "$attempt" =~ ^[1-9][0-9]*$ && ${#attempt} -le 10 ]] || exit 1
 [[ "$gateway_image" =~ ^nginxinc/nginx-unprivileged@sha256:[a-f0-9]{64}$ ]] || exit 1

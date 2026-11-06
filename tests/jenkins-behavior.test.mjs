@@ -22,6 +22,7 @@ function findBash() {
 }
 
 const bash = findBash();
+const deployPort = '18081';
 
 function run(script, args, options = {}) {
   const env = { ...process.env, ...options.env };
@@ -51,6 +52,51 @@ async function executable(path, body) {
   await writeFile(path, body, 'utf8');
   await chmod(path, 0o755);
 }
+
+test('deployment entrypoints reject missing or tampered fixed ports before side effects', () => {
+  const sha = 'a'.repeat(40);
+  const digest = `sha256:${'b'.repeat(64)}`;
+  const gateway = `nginxinc/nginx-unprivileged@sha256:${'c'.repeat(64)}`;
+  const localArgs = [
+    sha,
+    'ghcr.io/beginning-new/planegamecode',
+    digest,
+    deployPort,
+    '9001',
+    '77',
+    '1',
+    gateway,
+    'ops/jenkins/resource-gate.sh',
+  ];
+  const promoteArgs = [
+    sha,
+    'ghcr.io/beginning-new/planegamecode',
+    digest,
+    deployPort,
+    '77',
+    '1',
+    gateway,
+    'ops/jenkins/resource-gate.sh',
+  ];
+
+  for (const port of ['', '9999']) {
+    const localResult = run(join(root, 'ops/jenkins/deploy-local.sh'), [
+      ...localArgs.slice(0, 3),
+      port,
+      ...localArgs.slice(4),
+    ]);
+    assert.notEqual(localResult.status, 0);
+    assert.match(localResult.stderr, /DEPLOY_PORT must be the versioned value 18081/);
+
+    const promoteResult = run(join(root, 'deploy/promote.sh'), [
+      ...promoteArgs.slice(0, 3),
+      port,
+      ...promoteArgs.slice(4),
+    ]);
+    assert.notEqual(promoteResult.status, 0);
+    assert.match(promoteResult.stderr, /DEPLOY_PORT must be the versioned value 18081/);
+  }
+});
 
 test('release ordering advances only for a newer workflow run number', async () => {
   const work = await mkdtemp(join(tmpdir(), 'plane-order-'));
@@ -165,7 +211,7 @@ fi
     nextSha,
     'ghcr.io/beginning-new/planegamecode',
     digest,
-    '8080',
+    deployPort,
     '11',
     '1',
     gateway,
@@ -248,7 +294,7 @@ fi
     nextSha,
     'ghcr.io/beginning-new/planegamecode',
     digest,
-    '8080',
+    deployPort,
     '21',
     '1',
     gateway,
@@ -310,7 +356,7 @@ esac
     nextSha,
     'ghcr.io/beginning-new/planegamecode',
     digest,
-    '8080',
+    deployPort,
     '1',
     '1',
     gateway,

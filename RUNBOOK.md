@@ -54,7 +54,7 @@ GitHub Actions 是 PR/main 重型 CI 和受保护 `main` 的唯一 GHCR 发布�
 
 1. 建立只发现受保护 `main` 的受限 folder/job；关闭 PR discovery、fork Jenkinsfile 和 synthetic merge builds。controller 0 executors，job 固定 label `plane-game-cd-rootless`。
 2. 安装并锁定 Pipeline、GitHub Branch Source、Credentials Binding、Lockable Resources 和 Generic Webhook Trigger 的受审版本。插件安装本身不属于本候选。
-3. job 设置审计后的 `DEPLOY_PORT`，不提供 branch/SHA/digest/host 的人工 override。SCM 使用 `plane-github-scm-read`。
+3. 普通 `pipelineJob` 以 Jenkins 核心变量精确校验 `JOB_NAME=plane-game/main-cd`；不依赖仅 Multibranch job 才提供的 `BRANCH_NAME`。版本化 `Jenkinsfile` 固定 `DEPLOY_PORT=18081`，Job DSL 不提供端口参数，`deploy-local.sh` 与 `promote.sh` 同时拒绝缺失值和任何其他端口（包括 `9999`）。不提供 branch/SHA/digest/host/port 的人工 override。SCM 使用 `plane-github-scm-read`。
 4. repository webhook 仅订阅 `workflow_run`，验证 `plane-github-webhook-secret` HMAC；只在 `action=completed` 且 workflow name 为 `Checks` 时触发。映射 `workflow_run.head_sha -> CANDIDATE_SHA`、`workflow_run.id -> ACTIONS_RUN_ID`、`workflow_run.run_attempt -> ACTIONS_RUN_ATTEMPT`。
 5. 先以禁止部署的验证模式检查 webhook/API/artifact；独立安全、QA、Operations 和 CTO 审查均通过后，才允许启用 CD stage。不要恢复 `.github/workflows/deploy.yml`。
 
