@@ -21,10 +21,26 @@ function parametersFrom(actions) {
   return (actions ?? []).flatMap((action) => action?.parameters ?? []);
 }
 
-function hasDelivery(actions, deliveryId) {
-  return parametersFrom(actions).some(
-    (parameter) => parameter?.name === 'WEBHOOK_DELIVERY' && parameter?.value === deliveryId,
-  );
+function hasCandidateIdentity(actions, record) {
+  const expected = new Map([
+    ['CANDIDATE_SHA', record.candidate_sha],
+    ['ACTIONS_RUN_ID', record.run_id],
+    ['ACTIONS_RUN_ATTEMPT', record.run_attempt],
+    ['WEBHOOK_DELIVERY', record.delivery_id],
+  ]);
+  const parameters = parametersFrom(actions);
+  return [...expected].every(([name, value]) => {
+    const matches = parameters.filter((parameter) => parameter?.name === name);
+    return matches.length === 1 && String(matches[0].value ?? '') === value;
+  });
+}
+
+function uniqueMatch(items, predicate, multipleCode) {
+  const matches = (items ?? []).filter(predicate);
+  if (matches.length > 1) {
+    throw Object.assign(new Error('multiple Jenkins identity matches'), { code: multipleCode });
+  }
+  return matches[0] ?? null;
 }
 
 export class JenkinsEnqueuer {
@@ -105,17 +121,22 @@ export class JenkinsEnqueuer {
   }
 
   async reconcile(record) {
-    const deliveryId = record.delivery_id;
     if (record.queue_id) {
       const itemResponse = await this.request(
         `/queue/item/${record.queue_id}/api/json?tree=id,url,cancelled,task[url],executable[number,url],actions[parameters[name,value]]]`,
       );
       if (itemResponse.ok) {
         const item = await itemResponse.json();
-        if (!this.isExpectedJobUrl(item?.task?.url) || !hasDelivery(item?.actions, deliveryId)) {
-          throw Object.assign(new Error('queue identity mismatch'), { code: 'reconcile_failed' });
+        if (!this.isExpectedJobUrl(item?.task?.url) || !hasCandidateIdentity(item?.actions, record)) {
+          throw Object.assign(new Error('queue candidate identity mismatch'), {
+            code: 'queue_candidate_mismatch',
+          });
         }
         const queue = this.normalizeQueueIdentity(item.url ?? record.queue_url);
+        if (queue.queueId !== record.queue_id ||
+            (item?.id != null && String(item.id) !== record.queue_id)) {
+          throw Object.assign(new Error('queue identity mismatch'), { code: 'queue_identity_mismatch' });
+        }
         if (item.cancelled) return { ...queue, state: 'completed', buildResult: 'CANCELLED' };
         if (item.executable) return this.buildObservation(item.executable, queue);
         return { ...queue, state: 'queued' };
@@ -130,11 +151,17 @@ export class JenkinsEnqueuer {
     );
     if (!queue.ok) throw Object.assign(new Error('queue reconciliation failed'), { code: 'reconcile_failed' });
     const queuePayload = await queue.json();
-    const queued = (queuePayload.items ?? []).find(
-      (item) => this.isExpectedJobUrl(item?.task?.url) && hasDelivery(item.actions, deliveryId),
+    const queued = uniqueMatch(
+      queuePayload.items,
+      (item) => this.isExpectedJobUrl(item?.task?.url) &&
+        hasCandidateIdentity(item.actions, record),
+      'queue_multiple_matches',
     );
     if (queued) {
       const identity = this.normalizeQueueIdentity(queued.url ?? `/queue/item/${queued.id}/`);
+      if (record.queue_id && identity.queueId !== record.queue_id) {
+        throw Object.assign(new Error('queue identity mismatch'), { code: 'queue_identity_mismatch' });
+      }
       return { ...identity, state: 'queued' };
     }
 
@@ -143,11 +170,19 @@ export class JenkinsEnqueuer {
     );
     if (!builds.ok) throw Object.assign(new Error('build reconciliation failed'), { code: 'reconcile_failed' });
     const buildPayload = await builds.json();
-    const build = (buildPayload.builds ?? []).find((item) => hasDelivery(item.actions, deliveryId));
-    return build ? this.buildObservation(build, {
+    const build = uniqueMatch(
+      buildPayload.builds,
+      (item) => hasCandidateIdentity(item.actions, record),
+      'build_multiple_matches',
+    );
+    const observation = build ? this.buildObservation(build, {
       queueId: record.queue_id ?? null,
       queueUrl: record.queue_id ? record.queue_url : null,
     }) : null;
+    if (record.build_number && observation?.buildNumber !== record.build_number) {
+      throw Object.assign(new Error('build identity mismatch'), { code: 'build_identity_mismatch' });
+    }
+    return observation;
   }
 
   async enqueue(candidate) {

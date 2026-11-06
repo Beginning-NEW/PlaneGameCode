@@ -65,11 +65,18 @@ export class DeliveryStore {
     this.now = now;
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;');
-    const columns = this.db.prepare(`PRAGMA table_info('webhook_deliveries')`).all();
+    let columns = this.db.prepare(`PRAGMA table_info('webhook_deliveries')`).all();
     if (columns.length > 0 && !columns.some((column) => column.name === 'queue_id')) {
       this.migrateLegacySchema();
     }
     this.createSchema();
+    columns = this.db.prepare(`PRAGMA table_info('webhook_deliveries')`).all();
+    if (!columns.some((column) => column.name === 'reconcile_count')) {
+      this.db.exec(`
+        ALTER TABLE webhook_deliveries
+        ADD COLUMN reconcile_count INTEGER NOT NULL DEFAULT 0;
+      `);
+    }
     this.db.prepare(`
       UPDATE webhook_deliveries
       SET state = 'failed', retryable = 1, error_code = 'gateway_restart_before_submit', updated_at = ?
@@ -96,6 +103,7 @@ export class DeliveryStore {
         build_result TEXT,
         submitted_at TEXT,
         last_reconciled_at TEXT,
+        reconcile_count INTEGER NOT NULL DEFAULT 0,
         error_code TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -211,10 +219,12 @@ export class DeliveryStore {
   }
 
   markQueued(deliveryId, queue) {
-    return this.recordReconciliation(deliveryId, { ...queue, state: 'queued' });
+    return this.recordReconciliation(deliveryId, { ...queue, state: 'queued' }, {
+      incrementAttempt: false,
+    });
   }
 
-  recordReconciliation(deliveryId, observation) {
+  recordReconciliation(deliveryId, observation, { incrementAttempt = true } = {}) {
     const ranks = { submitted: 0, queued: 1, running: 2, completed: 3 };
     if (!Object.hasOwn(ranks, observation?.state)) {
       throw Object.assign(new Error('invalid reconciliation state'), { code: 'state_write_failed' });
@@ -225,27 +235,82 @@ export class DeliveryStore {
       if (!existing || !Object.hasOwn(ranks, existing.state)) {
         throw Object.assign(new Error('state transition failed'), { code: 'state_write_failed' });
       }
+      const identityFields = [
+        ['queue_id', 'queueId'],
+        ['queue_url', 'queueUrl'],
+        ['build_number', 'buildNumber'],
+        ['build_url', 'buildUrl'],
+      ];
+      for (const [storedField, observedField] of identityFields) {
+        const stored = existing[storedField];
+        const observed = observation[observedField];
+        if (stored != null && observed != null && stored !== observed) {
+          throw Object.assign(new Error('immutable Jenkins identity mismatch'), {
+            code: 'observation_identity_mismatch',
+          });
+        }
+      }
+      if ((observation.queueId == null) !== (observation.queueUrl == null) ||
+          (observation.buildNumber == null) !== (observation.buildUrl == null)) {
+        throw Object.assign(new Error('incomplete Jenkins identity'), {
+          code: 'observation_identity_mismatch',
+        });
+      }
+      if (existing.build_result != null && observation.buildResult != null &&
+          existing.build_result !== observation.buildResult) {
+        throw Object.assign(new Error('immutable Jenkins result mismatch'), {
+          code: 'observation_identity_mismatch',
+        });
+      }
       const state = ranks[observation.state] > ranks[existing.state] ? observation.state : existing.state;
       const timestamp = this.now();
       this.db.prepare(`
         UPDATE webhook_deliveries
         SET state = ?, retryable = 0,
-            queue_id = COALESCE(?, queue_id), queue_url = COALESCE(?, queue_url),
-            build_number = COALESCE(?, build_number), build_url = COALESCE(?, build_url),
+            queue_id = COALESCE(queue_id, ?), queue_url = COALESCE(queue_url, ?),
+            build_number = COALESCE(build_number, ?), build_url = COALESCE(build_url, ?),
             build_result = COALESCE(?, build_result), last_reconciled_at = ?,
+            reconcile_count = reconcile_count + ?,
             error_code = NULL, updated_at = ?
         WHERE delivery_id = ?
       `).run(
         state, observation.queueId ?? null, observation.queueUrl ?? null,
         observation.buildNumber ?? null, observation.buildUrl ?? null,
-        observation.buildResult ?? null, timestamp, timestamp, deliveryId,
+        observation.buildResult ?? null,
+        incrementAttempt ? timestamp : existing.last_reconciled_at,
+        incrementAttempt ? 1 : 0,
+        timestamp, deliveryId,
       );
       this.db.exec('COMMIT');
       return this.get(deliveryId);
     } catch (error) {
       this.db.exec('ROLLBACK');
+      if (error?.code === 'observation_identity_mismatch') {
+        try {
+          this.recordReconciliationError(deliveryId, error.code);
+          error.auditRecorded = true;
+        } catch {}
+      }
       throw error;
     }
+  }
+
+  recordReconciliationPending(deliveryId, errorCode) {
+    return this.recordReconciliationError(deliveryId, errorCode);
+  }
+
+  recordReconciliationError(deliveryId, errorCode) {
+    const timestamp = this.now();
+    const result = this.db.prepare(`
+      UPDATE webhook_deliveries
+      SET retryable = 0, last_reconciled_at = ?, reconcile_count = reconcile_count + 1,
+          error_code = ?, updated_at = ?
+      WHERE delivery_id = ? AND state IN ('submitted', 'queued', 'running')
+    `).run(timestamp, errorCode, timestamp, deliveryId);
+    if (result.changes !== 1) {
+      throw Object.assign(new Error('state transition failed'), { code: 'state_write_failed' });
+    }
+    return this.get(deliveryId);
   }
 
   markSubmissionError(deliveryId, errorCode) {
@@ -334,6 +399,7 @@ export class WebhookAdmission {
         const reconciled = await this.enqueuer.reconcile(reservation.record);
         if (!reconciled) {
           const code = reservation.record.state === 'submitted' ? 'submitted_unknown' : 'queue_state_unknown';
+          this.store.recordReconciliationPending(deliveryId, code);
           this.logger({ outcome: 'pending', code });
           return response(202, code);
         }
@@ -341,7 +407,12 @@ export class WebhookAdmission {
         const code = record.state === 'queued' ? 'already_queued' : record.state;
         this.logger({ outcome: 'reconciled', code });
         return response(202, code);
-      } catch {
+      } catch (error) {
+        if (!error?.auditRecorded) {
+          try {
+            this.store.recordReconciliationError(deliveryId, safeErrorCode(error));
+          } catch {}
+        }
         this.logger({ outcome: 'failed', code: 'reconcile_failed' });
         return response(503, 'reconcile_failed');
       }
@@ -371,6 +442,9 @@ export class WebhookAdmission {
     try {
       this.store.markQueued(deliveryId, queued);
     } catch {
+      try {
+        this.store.recordReconciliationError(deliveryId, 'queue_identity_persistence_failed');
+      } catch {}
       this.logger({ outcome: 'failed', code: 'state_write_failed' });
       return response(503, 'state_write_failed');
     }

@@ -4,7 +4,17 @@ import { JenkinsEnqueuer } from '../ops/jenkins/webhook-gateway.mjs';
 
 const baseUrl = 'http://jenkins.test';
 const deliveryId = '123e4567-e89b-42d3-a456-426614174000';
-const actions = [{ parameters: [{ name: 'WEBHOOK_DELIVERY', value: deliveryId }] }];
+const candidateSha = '0123456789abcdef0123456789abcdef01234567';
+const runId = '123';
+const runAttempt = '1';
+const actions = [{
+  parameters: [
+    { name: 'CANDIDATE_SHA', value: candidateSha },
+    { name: 'ACTIONS_RUN_ID', value: runId },
+    { name: 'ACTIONS_RUN_ATTEMPT', value: runAttempt },
+    { name: 'WEBHOOK_DELIVERY', value: deliveryId },
+  ],
+}];
 
 function json(payload, status = 200, headers = {}) {
   return new Response(JSON.stringify(payload), {
@@ -32,6 +42,9 @@ function fixture(responses) {
 function record(overrides = {}) {
   return {
     delivery_id: deliveryId,
+    candidate_sha: candidateSha,
+    run_id: runId,
+    run_attempt: runAttempt,
     state: 'submitted',
     queue_id: null,
     queue_url: null,
@@ -159,4 +172,73 @@ test('the queue-left visibility gap remains unknown and never becomes evidence f
     queue_url: `${baseUrl}/queue/item/42/`,
   })), null);
   assert.deepEqual(gap.calls.map((call) => call.method), ['GET', 'GET', 'GET']);
+});
+test('direct queue reconciliation requires the complete immutable candidate tuple', async () => {
+  const mismatched = fixture([json({
+    id: 42,
+    url: `${baseUrl}/queue/item/42/`,
+    task: { url: `${baseUrl}/job/plane-game/job/main-cd/` },
+    actions: [{ parameters: [
+      { name: 'CANDIDATE_SHA', value: 'f'.repeat(40) },
+      ...actions[0].parameters.slice(1),
+    ] }],
+  })]);
+  await assert.rejects(
+    mismatched.enqueuer.reconcile(record({
+      state: 'queued',
+      queue_id: '42',
+      queue_url: `${baseUrl}/queue/item/42/`,
+    })),
+    (error) => error.code === 'queue_candidate_mismatch',
+  );
+});
+
+test('fallback reconciliation rejects multiple complete candidate matches', async () => {
+  const item = (id) => ({
+    id,
+    url: `${baseUrl}/queue/item/${id}/`,
+    task: { url: `${baseUrl}/job/plane-game/job/main-cd/` },
+    actions,
+  });
+  const duplicateQueue = fixture([json({ items: [item(41), item(42)] })]);
+  await assert.rejects(
+    duplicateQueue.enqueuer.reconcile(record()),
+    (error) => error.code === 'queue_multiple_matches',
+  );
+
+  const build = (number) => ({
+    number,
+    url: `${baseUrl}/job/plane-game/job/main-cd/${number}/`,
+    building: true,
+    result: null,
+    actions,
+  });
+  const duplicateBuild = fixture([
+    json({ items: [] }),
+    json({ builds: [build(17), build(18)] }),
+  ]);
+  await assert.rejects(
+    duplicateBuild.enqueuer.reconcile(record()),
+    (error) => error.code === 'build_multiple_matches',
+  );
+});
+
+test('fallback reconciliation cannot rebind a persisted queue identity', async () => {
+  const rebound = fixture([
+    json({}, 404),
+    json({ items: [{
+      id: 99,
+      url: `${baseUrl}/queue/item/99/`,
+      task: { url: `${baseUrl}/job/plane-game/job/main-cd/` },
+      actions,
+    }] }),
+  ]);
+  await assert.rejects(
+    rebound.enqueuer.reconcile(record({
+      state: 'queued',
+      queue_id: '42',
+      queue_url: `${baseUrl}/queue/item/42/`,
+    })),
+    (error) => error.code === 'queue_identity_mismatch',
+  );
 });

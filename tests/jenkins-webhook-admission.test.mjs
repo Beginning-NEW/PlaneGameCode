@@ -236,7 +236,11 @@ test('a confirmed enqueue with a queued-state write failure never posts a second
 
   assert.equal((await base.admission.handle(request())).body.code, 'state_write_failed');
   assert.equal(base.store.get(delivery).state, 'submitted');
+  assert.equal(base.store.get(delivery).error_code, 'queue_identity_persistence_failed');
+  assert.equal(base.store.get(delivery).reconcile_count, 1);
   assert.equal((await base.admission.handle(request())).body.code, 'submitted_unknown');
+  assert.equal(base.store.get(delivery).error_code, 'submitted_unknown');
+  assert.equal(base.store.get(delivery).reconcile_count, 2);
   assert.deepEqual(enqueuer.calls, { enqueue: 1, reconcile: 1 });
 });
 
@@ -286,4 +290,126 @@ test('reconciliation persists monotonic queued, running, and completed build ide
     }))(store.get(delivery)),
     { state: 'completed', queue_id: '1', build_number: '17', build_result: 'SUCCESS' },
   );
+});
+test('empty reconciliation windows remain durably auditable across restart', async (t) => {
+  const { admission, directory, store, enqueuer } = await fixture(t);
+  store.reserve(delivery, {
+    candidateSha: trusted.workflow_run.head_sha,
+    runId: String(trusted.workflow_run.id),
+    runAttempt: String(trusted.workflow_run.run_attempt),
+  });
+  store.markSubmitted(delivery);
+
+  assert.equal((await admission.handle(request())).body.code, 'submitted_unknown');
+  assert.equal((await admission.handle(request())).body.code, 'submitted_unknown');
+  assert.equal(store.get(delivery).reconcile_count, 2);
+  assert.equal(store.get(delivery).error_code, 'submitted_unknown');
+  assert.ok(store.get(delivery).last_reconciled_at);
+  store.close();
+
+  const restartedStore = new DeliveryStore(join(directory, 'deliveries.sqlite'));
+  const restarted = new WebhookAdmission({
+    webhookSecretProvider: { get: () => secret },
+    store: restartedStore,
+    enqueuer,
+  });
+  assert.equal((await restarted.handle(request())).body.code, 'submitted_unknown');
+  assert.equal(restartedStore.get(delivery).reconcile_count, 3);
+  assert.equal(restartedStore.get(delivery).error_code, 'submitted_unknown');
+  assert.equal(enqueuer.calls.enqueue, 0);
+  restartedStore.close();
+});
+
+test('queue and build identities are write-once and mismatches are durably audited', async (t) => {
+  const { admission, store } = await fixture(t);
+  assert.equal((await admission.handle(request())).body.code, 'queued');
+
+  assert.throws(
+    () => store.recordReconciliation(delivery, {
+      state: 'queued',
+      queueId: '99',
+      queueUrl: 'http://jenkins.test/queue/item/99/',
+    }),
+    (error) => error.code === 'observation_identity_mismatch',
+  );
+  let persisted = store.get(delivery);
+  assert.equal(persisted.queue_id, '1');
+  assert.equal(persisted.error_code, 'observation_identity_mismatch');
+  assert.equal(persisted.reconcile_count, 1);
+
+  store.recordReconciliation(delivery, {
+    state: 'running',
+    buildNumber: '17',
+    buildUrl: 'http://jenkins.test/job/plane-game/job/main-cd/17/',
+  });
+  assert.throws(
+    () => store.recordReconciliation(delivery, {
+      state: 'running',
+      buildNumber: '18',
+      buildUrl: 'http://jenkins.test/job/plane-game/job/main-cd/18/',
+    }),
+    (error) => error.code === 'observation_identity_mismatch',
+  );
+  persisted = store.get(delivery);
+  assert.equal(persisted.build_number, '17');
+  assert.equal(persisted.error_code, 'observation_identity_mismatch');
+  assert.equal(persisted.reconcile_count, 3);
+});
+test('reconciliation errors persist a fixed code without another enqueue', async (t) => {
+  const enqueuer = fakeEnqueuer({ reconcile: () => {
+    throw Object.assign(new Error('duplicate observations'), { code: 'queue_multiple_matches' });
+  } });
+  const { admission, store } = await fixture(t, { enqueuer });
+  store.reserve(delivery, {
+    candidateSha: trusted.workflow_run.head_sha,
+    runId: String(trusted.workflow_run.id),
+    runAttempt: String(trusted.workflow_run.run_attempt),
+  });
+  store.markSubmitted(delivery);
+
+  assert.equal((await admission.handle(request())).body.code, 'reconcile_failed');
+  const persisted = store.get(delivery);
+  assert.equal(persisted.state, 'submitted');
+  assert.equal(persisted.error_code, 'queue_multiple_matches');
+  assert.equal(persisted.reconcile_count, 1);
+  assert.ok(persisted.last_reconciled_at);
+  assert.deepEqual(enqueuer.calls, { enqueue: 0, reconcile: 1 });
+});
+test('current delivery databases add the reconciliation audit counter in place', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'plane-webhook-current-'));
+  const path = join(directory, 'deliveries.sqlite');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const current = new DatabaseSync(path);
+  current.exec(`
+    CREATE TABLE webhook_deliveries (
+      delivery_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      run_attempt TEXT NOT NULL,
+      candidate_sha TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (
+        state IN ('dispatching', 'submitted', 'queued', 'running', 'completed', 'failed')
+      ),
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      retryable INTEGER NOT NULL DEFAULT 1 CHECK (retryable IN (0, 1)),
+      queue_id TEXT,
+      queue_url TEXT,
+      build_number TEXT,
+      build_url TEXT,
+      build_result TEXT,
+      submitted_at TEXT,
+      last_reconciled_at TEXT,
+      error_code TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (run_id, run_attempt)
+    ) STRICT;
+  `);
+  current.close();
+
+  const migrated = new DeliveryStore(path);
+  const columns = migrated.db.prepare(`PRAGMA table_info('webhook_deliveries')`).all();
+  const counter = columns.find((column) => column.name === 'reconcile_count');
+  assert.equal(counter?.notnull, 1);
+  assert.equal(counter?.dflt_value, '0');
+  migrated.close();
 });
