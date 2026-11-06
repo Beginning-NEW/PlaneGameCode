@@ -1,0 +1,149 @@
+name: Checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.20.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm format --check
+      - run: pnpm test
+      - run: bash -n deploy/*.sh deploy/plane-preflight ops/jenkins/*.sh
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - name: Container and health smoke
+        run: |
+          docker build --build-arg "GIT_SHA=${GITHUB_SHA}" -t "plane-game:${GITHUB_SHA}" .
+          cid=$(docker run -d -p 127.0.0.1:0:8080 "plane-game:${GITHUB_SHA}")
+          trap 'docker rm -f "$cid"' EXIT
+          for n in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy ] && break
+            sleep 1
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy
+          port=$(docker port "$cid" 8080/tcp | sed 's/.*://')
+          curl --fail --show-error "http://127.0.0.1:${port}/healthz"
+  publish:
+    name: Publish protected-main candidate
+    needs: verify
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'Beginning-NEW/PlaneGameCode'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Reject a superseded or foreign revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = Beginning-NEW/PlaneGameCode
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          main_sha=$(curl -fsS \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/git/ref/heads/main" | jq -r .object.sha)
+          test "$main_sha" = "$GITHUB_SHA"
+      - name: Build, smoke, and publish immutable GHCR digest
+        id: image
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          NODE_BASE_IMAGE: ${{ vars.NODE_BASE_IMAGE }}
+          NGINX_BASE_IMAGE: ${{ vars.NGINX_BASE_IMAGE }}
+        run: |
+          set -euo pipefail
+          image_repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          [[ "$NODE_BASE_IMAGE" =~ ^node:24-alpine@sha256:[0-9a-f]{64}$ ]]
+          [[ "$NGINX_BASE_IMAGE" =~ ^nginxinc/nginx-unprivileged:1[.]29-alpine@sha256:[0-9a-f]{64}$ ]]
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build --platform linux/amd64 \
+            --build-arg "NODE_BASE_IMAGE=$NODE_BASE_IMAGE" \
+            --build-arg "NGINX_BASE_IMAGE=$NGINX_BASE_IMAGE" \
+            --build-arg "GIT_SHA=$GITHUB_SHA" \
+            -t "$image_repository:$GITHUB_SHA" .
+          cid=$(docker run -d -p 127.0.0.1:0:8080 "$image_repository:$GITHUB_SHA")
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 30); do
+            test "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy && break
+            sleep 1
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy
+          expected_version=$(printf '{"sha":"%s"}' "$GITHUB_SHA")
+          test "$(docker exec "$cid" wget -q -O - http://127.0.0.1:8080/version.json)" = "$expected_version"
+          if docker buildx imagetools inspect "$image_repository:$GITHUB_SHA" >/dev/null 2>&1; then
+            echo 'Refusing to overwrite an existing full-SHA tag' >&2
+            exit 1
+          fi
+          docker push "$image_repository:$GITHUB_SHA"
+          image_digest=$(docker buildx imagetools inspect "$image_repository:$GITHUB_SHA" --format '{{.Manifest.Digest}}')
+          [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          gateway_image="${NGINX_BASE_IMAGE/:1.29-alpine@/@}"
+          [[ "$gateway_image" =~ ^nginxinc/nginx-unprivileged@sha256:[0-9a-f]{64}$ ]]
+          echo "repository=$image_repository" >> "$GITHUB_OUTPUT"
+          echo "digest=$image_digest" >> "$GITHUB_OUTPUT"
+          echo "gateway=$gateway_image" >> "$GITHUB_OUTPUT"
+      - name: Record the trusted Jenkins handoff
+        env:
+          IMAGE_REPOSITORY: ${{ steps.image.outputs.repository }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          GATEWAY_IMAGE: ${{ steps.image.outputs.gateway }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg ref "$GITHUB_REF" \
+            --arg sha "$GITHUB_SHA" \
+            --arg image_repository "$IMAGE_REPOSITORY" \
+            --arg image_digest "$IMAGE_DIGEST" \
+            --arg gateway_image "$GATEWAY_IMAGE" \
+            --arg workflow "$GITHUB_WORKFLOW" \
+            --arg workflow_path '.github/workflows/checks.yml' \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson run_number "$GITHUB_RUN_NUMBER" \
+            '{schema: 1, repository: $repository, ref: $ref, sha: $sha,
+              image_repository: $image_repository, image_digest: $image_digest,
+              gateway_image: $gateway_image, workflow: $workflow,
+              workflow_path: $workflow_path, run_id: $run_id,
+              run_attempt: $run_attempt, run_number: $run_number}' \
+            > release-candidate.json
+          jq -e . release-candidate.json >/dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-candidate-${{ github.sha }}
+          path: release-candidate.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Summarize the handoff
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          echo "repository=$GITHUB_REPOSITORY ref=$GITHUB_REF sha=$GITHUB_SHA digest=$IMAGE_DIGEST run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,12 @@
+# Jenkins CD operator notes
+
+This directory implements the repository side of the main-only, same-host CD contract. See `RUNBOOK.md` for resource admission, credential ownership, setup, rollback, and evidence requirements.
+
+- `verify-candidate.sh` treats webhook parameters as untrusted and verifies the successful GitHub Actions `Checks` push run, repository/ref/SHA/run attempt, API/artifact-matching run number, unique candidate artifact, immutable digests, and current protected-main head.
+- `Jenkinsfile` accepts only the core Jenkins identity `JOB_NAME=plane-game/main-cd`; a plain `pipelineJob` does not provide Multibranch's `BRANCH_NAME`. The versioned pipeline fixes `DEPLOY_PORT=18081`, exposes no port parameter, and both deployment entrypoints reject every other value.
+- `resource-gate.sh` enforces the restricted `plane-preflight` executor, rootless Docker, 3.5 GiB current memory admission, 35 GiB disk admission, and the 384 MiB/25% agent cgroup caps.
+- `deploy-local.sh` creates source from the verified Git object, uses the separately rotated `plane-ghcr-pull` credential in a temporary Docker config, pulls only immutable digests, then runs `pre-promote-check.sh` so API/artifact and SCM main are checked after the pull and immediately before promotion. It also passes the candidate-owned `resource-gate.sh` into the promoter; the post-CD resource check runs before the rollback trap is released, so a failure restores the prior healthy release and ordering markers.
+- `config/generic-webhook-trigger.yaml` is the secret-free JCasC HMAC whitelist fragment; `config/plane-game-job.groovy` is the disabled-by-default Job DSL seed input. Import both through the controller's reviewed configuration repository, not by pasting secrets or payloads into a console.
+- `webhook-contract-dry-run.mjs` performs an offline allow/deny and ephemeral-HMAC contract check without printing the payload or key. Run `node ops/jenkins/webhook-contract-dry-run.mjs`; a real Jenkins `gwt-dry-run` remains an Operations validation after plugin installation and approval.
+
+The Jenkins controller must have zero executors and no Docker or deployment credential access. The job must use `disableConcurrentBuilds`, the explicit `plane-game-production-cd` lock, and the host `flock`. Do not add build, test, Playwright, image push, SSH, ACR, DNS, Nginx, or certificate operations here.
