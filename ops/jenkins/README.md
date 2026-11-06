@@ -8,27 +8,36 @@ GitHub must send only `workflow_run` events to the reviewed reverse-proxy route 
 
 Import `config/plane-game-job.groovy` only after review. Install `config/plane-game-webhook-gateway.service` as a template through the controller host's configuration process; do not install it directly from a checkout. Keep one gateway process under the included `flock`, keep `/var/lib/plane-game-webhook` mode `0700`, and provide the webhook secret and minimal Jenkins API token through systemd credentials. The `plane-webhook-gateway` Jenkins principal needs only Overall Read plus Item Read/Build for `plane-game/main-cd` and queue/build read needed for reconciliation. It must have no Configure/Administer, credential, agent, GHCR, Docker, or deployment-host access.
 
-The repository's canonical controller endpoint is declared in `config/jenkins-loopback-contract.env`. The reviewed controller drop-in is `config/jenkins.service.d/plane-game-limits.conf`; install it as `/etc/systemd/system/jenkins.service.d/plane-game-limits.conf` only through the approved Operations change. Run `node ops/jenkins/check-loopback-contract.mjs` before staging either template. It must report `endpoint=http://127.0.0.1:18080`, `gateway=match`, `controller=match`, and `legacy_8080=absent`.
+The repository's canonical controller endpoint is declared in `config/jenkins-loopback-contract.env`. The current controller path is the Operations-owned rootless Docker container; this repository does not install or configure that container. Its JVM, memory, CPU, PIDs, image, and rollback settings come from the separately approved fresh resource baseline, not from a host `jenkins.service` drop-in.
+
+`config/jenkins.service.d/plane-game-loopback.conf` is an endpoint-only reference for a possible future host-systemd controller. It is **not used or staged for the current rootless-container CD path** and deliberately contains no JVM or resource policy. Do not restore or propagate the retired `plane-game-limits.conf` values (`-Xmx256m`, `MemoryHigh=448M`, or `MemoryMax=512M`) through this port fix. A future move to host systemd requires its own approved resource configuration and runtime verification.
+
+Run `node ops/jenkins/check-loopback-contract.mjs` before staging the gateway template. It must report `endpoint=http://127.0.0.1:18080`, `gateway=match`, `controller=match`, and `legacy_8080=absent`. The contract also fails if the endpoint-only reference acquires JVM or resource limits.
 
 ## Pre-enable loopback verification
 
-After both reviewed templates have been staged and the loopback controller smoke is running, but before enabling the gateway, webhook, or CD job, Operations must run this exact read-only check on the controller host:
+After the approved rootless controller smoke is running and the gateway template has been staged, but before enabling the gateway, webhook, or CD job, Operations must run this exact read-only check on the controller host. Set `JENKINS_CONTAINER` to the approved rootless controller container name from the Operations change record; the guard rejects an empty value.
 
 ```bash
 set -eu
+: "${JENKINS_CONTAINER:?set this to the approved rootless Jenkins container name}"
+export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
 env_value() {
   systemctl show "$1" --property=Environment --value |
     tr ' ' '\n' |
     sed -n "s/^$2=//p"
 }
 
-jenkins_host=$(env_value jenkins.service JENKINS_LISTEN_ADDRESS)
-jenkins_port=$(env_value jenkins.service JENKINS_PORT)
 gateway_url=$(env_value plane-game-webhook-gateway.service JENKINS_URL)
-controller_url="http://${jenkins_host}:${jenkins_port}"
+controller_binding=$(
+  docker inspect --format '{{range $port, $bindings := .HostConfig.PortBindings}}{{if eq $port "8080/tcp"}}{{range $bindings}}{{.HostIp}}:{{.HostPort}}{{end}}{{end}}' \
+    "$JENKINS_CONTAINER"
+)
+controller_url="http://${controller_binding}"
 
 printf 'effective controller=%s\n' "$controller_url"
 printf 'effective gateway=%s\n' "$gateway_url"
+test "$controller_binding" = '127.0.0.1:18080'
 test "$controller_url" = 'http://127.0.0.1:18080'
 test "$gateway_url" = "$controller_url"
 
@@ -41,7 +50,7 @@ printf '%s\n' "$listener_18080" | awk '{print $4}' | grep -Fx '127.0.0.1:18080'
 test -z "$listener_8080"
 ```
 
-Expected evidence is two identical effective URLs, each exactly `http://127.0.0.1:18080`; one `LISTEN` row whose local address is exactly `127.0.0.1:18080`; and an empty `listener 8080` section. A missing/multiple `18080` listener, any `8080` listener, a non-loopback address, or any environment mismatch is an immediate STOP/NO-GO: keep the gateway and CD job disabled and use the approved controller rollback procedure. These commands do not enable, restart, or otherwise mutate either service.
+Expected evidence is the rootless container's effective host binding `127.0.0.1:18080`, a matching gateway URL exactly `http://127.0.0.1:18080`, one `LISTEN` row whose local address is exactly `127.0.0.1:18080`, and an empty host `listener 8080` section. Container port `8080/tcp` is internal; it must be published only to host `127.0.0.1:18080`. A missing/multiple `18080` listener, any host `8080` listener, a non-loopback binding, or any environment mismatch is an immediate STOP/NO-GO: keep the gateway and CD job disabled and use the approved controller rollback procedure. These commands do not enable, restart, or otherwise mutate the container or gateway service.
 
 A first valid delivery is reserved as `dispatching`, then durably moved to non-retryable `submitted` before the only permitted Jenkins POST. A valid same-origin numeric `201 Location` persists the queue item identity as `queued`; later signed replays only reconcile that identity through `running` and `completed`. An empty queue/build lookup is `submitted_unknown` or `queue_state_unknown`, never permission for another POST. Startup retries only a pre-submit `dispatching` row; legacy ambiguous rows migrate to `submitted`. Resolve a persistently unknown submission through operator investigation rather than deleting/resetting its row. A different delivery for the same `(run_id, run_attempt)` is acknowledged without a second queue call. Back up the SQLite database with the host state and retain the corresponding Jenkins queue/build history.
 

@@ -48,12 +48,26 @@ export function assertLoopbackContract({ declaration, gatewayService, controller
   const controllerPort = systemdEnvironment(
     controllerDropIn,
     'JENKINS_PORT',
-    'jenkins.service.d/plane-game-limits.conf',
+    'jenkins.service.d/plane-game-loopback.conf',
   );
   const controllerHost = systemdEnvironment(
     controllerDropIn,
     'JENKINS_LISTEN_ADDRESS',
-    'jenkins.service.d/plane-game-limits.conf',
+    'jenkins.service.d/plane-game-loopback.conf',
+  );
+
+  const forbiddenResourceSettings = controllerDropIn
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) =>
+      /^(?:Environment="?JAVA_OPTS=|Memory(?:Accounting|High|Max)=|CPU(?:Accounting|Quota)=|Tasks(?:Accounting|Max)=|OOMPolicy=)/.test(
+        line,
+      ),
+    );
+  assert.deepEqual(
+    forbiddenResourceSettings,
+    [],
+    'loopback endpoint template must not carry Jenkins JVM or resource limits',
   );
 
   const endpoint = new URL(expected);
@@ -81,7 +95,7 @@ async function main(paths = process.argv.slice(2)) {
     : [
         new URL('jenkins-loopback-contract.env', config),
         new URL('plane-game-webhook-gateway.service', config),
-        new URL('jenkins.service.d/plane-game-limits.conf', config),
+        new URL('jenkins.service.d/plane-game-loopback.conf', config),
       ];
   const [declaration, gatewayService, controllerDropIn] = await Promise.all([
     readFile(declarationPath, 'utf8'),

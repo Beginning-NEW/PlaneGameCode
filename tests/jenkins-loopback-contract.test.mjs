@@ -7,7 +7,7 @@ const [declaration, gatewayService, controllerDropIn] = await Promise.all([
   readFile(new URL('../ops/jenkins/config/jenkins-loopback-contract.env', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/config/plane-game-webhook-gateway.service', import.meta.url), 'utf8'),
   readFile(
-    new URL('../ops/jenkins/config/jenkins.service.d/plane-game-limits.conf', import.meta.url),
+    new URL('../ops/jenkins/config/jenkins.service.d/plane-game-loopback.conf', import.meta.url),
     'utf8',
   ),
 ]);
@@ -35,5 +35,13 @@ test('controller port mismatch fails the loopback contract', () => {
   assert.throws(
     () => assertLoopbackContract({ declaration, gatewayService, controllerDropIn: mismatch }),
     /controller JENKINS_PORT diverges/,
+  );
+});
+
+test('controller endpoint template rejects retired JVM and resource limits', () => {
+  const staleLimits = `${controllerDropIn}Environment="JAVA_OPTS=-Xmx256m"\nMemoryMax=512M\n`;
+  assert.throws(
+    () => assertLoopbackContract({ declaration, gatewayService, controllerDropIn: staleLimits }),
+    /must not carry Jenkins JVM or resource limits/,
   );
 });
