@@ -14,8 +14,9 @@ export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
 docker info --format '{{json .SecurityOptions}}' | grep -q rootless || { echo 'Rootless Docker is required' >&2; exit 1; }
 root="$HOME/plane-game"
 stage="$root/incoming/$sha-$run-$attempt"
-[[ "$PWD" == "$root" && -f "$stage/compose.yaml" && -f "$stage/deploy/deploy.sh" ]] || exit 1
+[[ "$PWD" == "$root" && -f "$stage/compose.yaml" && -f "$stage/deploy/deploy.sh" && -f "$stage/deploy/deployment-id.sh" ]] || exit 1
 [[ -z "$(find "$stage" -type l -print -quit)" ]] || { echo 'Source archive contains a symlink' >&2; exit 1; }
+source "$stage/deploy/deployment-id.sh"
 [[ "$post_cd_resource_gate_ref" == ops/jenkins/resource-gate.sh ]] || {
   echo 'Post-CD resource gate is not the candidate-owned reviewed script' >&2
   exit 1
@@ -24,9 +25,11 @@ post_cd_resource_gate="$stage/$post_cd_resource_gate_ref"
 [[ -f "$post_cd_resource_gate" && ! -L "$post_cd_resource_gate" ]] || exit 1
 "$stage/deploy/plane-preflight"
 export PLANE_GAME_RUNTIME_DIR="$root/runtime"
+export PLANE_GAME_PROMOTION_CONTEXT="$PLANE_GAME_RUNTIME_DIR/promotion-context/$run-$attempt-$sha.env"
 mkdir -p "$PLANE_GAME_RUNTIME_DIR" "$root/deploy"
 exec 8>"$PLANE_GAME_RUNTIME_DIR/.release.lock"
 flock 8
+rm -f "$PLANE_GAME_PROMOTION_CONTEXT"
 bash "$stage/deploy/check-release-order.sh" "$run" "$attempt"
 old_sha=''
 [[ ! -f "$PLANE_GAME_RUNTIME_DIR/active_sha" ]] || old_sha=$(<"$PLANE_GAME_RUNTIME_DIR/active_sha")
@@ -64,14 +67,72 @@ restore_attempt_marker() {
   fi
 }
 deactivate_first_release() {
-  local gateway
-  [[ -f "$PLANE_GAME_RUNTIME_DIR/active_sha" ]] || return 0
-  [[ "$(<"$PLANE_GAME_RUNTIME_DIR/active_sha")" == "$sha" ]] || return 1
-  gateway=$(docker compose -p plane-game ps -q gateway 2>/dev/null || true)
-  [[ -n "$gateway" ]] || return 1
-  docker rm -f "$gateway" >/dev/null 2>&1 || return 1
+  local deployment_id candidate_id gateway_id network_id network_created
+  local actual candidate_removed=true cleanup_incomplete=false
+  if [[ -f "$PLANE_GAME_RUNTIME_DIR/active_sha" ]]; then
+    [[ "$(<"$PLANE_GAME_RUNTIME_DIR/active_sha")" == "$sha" ]] || return 1
+  elif [[ ! -f "$PLANE_GAME_RUNTIME_DIR/active/upstream.inc" && ! -f "$PLANE_GAME_PROMOTION_CONTEXT" ]]; then
+    return 0
+  fi
+
+  if [[ ! -f "$PLANE_GAME_PROMOTION_CONTEXT" || -L "$PLANE_GAME_PROMOTION_CONTEXT" ]]; then
+    cleanup_incomplete=true
+  else
+    promotion_value() {
+      local key="$1"
+      sed -n "s/^${key}=//p" "$PLANE_GAME_PROMOTION_CONTEXT"
+    }
+    deployment_id=$(promotion_value deployment_id)
+    candidate_id=$(promotion_value candidate_id)
+    gateway_id=$(promotion_value gateway_id)
+    network_id=$(promotion_value network_id)
+    network_created=$(promotion_value network_created)
+    if [[ "$(promotion_value release_sha)" != "$sha" || "$(promotion_value image_digest)" != "$digest" ||
+          ! "$candidate_id" =~ ^[a-f0-9]{64}$ || ! "$gateway_id" =~ ^[a-f0-9]{64}$ ||
+          ( "$network_created" != true && "$network_created" != false ) ||
+          ( "$network_created" == true && ! "$network_id" =~ ^[a-f0-9]{64}$ ) ||
+          ( "$network_created" == false && -n "$network_id" ) ]] ||
+       ! valid_deployment_id "$deployment_id"; then
+      cleanup_incomplete=true
+    else
+      if docker container inspect "$gateway_id" >/dev/null 2>&1; then
+        actual=$(docker container inspect --format '{{.Id}} {{ index .Config.Labels "com.plane-game.deployment-id" }} {{ index .Config.Labels "com.docker.compose.project" }} {{ index .Config.Labels "com.docker.compose.service" }}' "$gateway_id" 2>/dev/null || true)
+        if [[ "$actual" != "$gateway_id $deployment_id plane-game gateway" ]] ||
+           ! docker rm -f "$gateway_id" >/dev/null 2>&1 ||
+           docker container inspect "$gateway_id" >/dev/null 2>&1; then
+          cleanup_incomplete=true
+        fi
+      fi
+      if docker container inspect "$candidate_id" >/dev/null 2>&1; then
+        actual=$(docker container inspect --format '{{.Id}} {{ index .Config.Labels "com.plane-game.deployment-id" }} {{ index .Config.Labels "com.plane-game.release-sha" }} {{ index .Config.Labels "com.plane-game.image-digest" }}' "$candidate_id" 2>/dev/null || true)
+        if [[ "$actual" != "$candidate_id $deployment_id $sha $digest" ]] ||
+           ! docker rm -f "$candidate_id" >/dev/null 2>&1 ||
+           docker container inspect "$candidate_id" >/dev/null 2>&1; then
+          cleanup_incomplete=true
+          candidate_removed=false
+        fi
+      fi
+      if [[ "$network_created" == true ]] && docker network inspect "$network_id" >/dev/null 2>&1; then
+        actual=$(docker network inspect --format '{{.Id}} {{ index .Labels "com.plane-game.deployment-id" }} {{ index .Labels "com.docker.compose.project" }} {{ index .Labels "com.docker.compose.network" }}' "$network_id" 2>/dev/null || true)
+        if ! "$candidate_removed" || [[ "$actual" != "$network_id $deployment_id plane-game default" ]] ||
+           ! docker network rm "$network_id" >/dev/null 2>&1 ||
+           docker network inspect "$network_id" >/dev/null 2>&1; then
+          cleanup_incomplete=true
+        fi
+      fi
+    fi
+  fi
   rm -f "$PLANE_GAME_RUNTIME_DIR/active/upstream.inc" "$PLANE_GAME_RUNTIME_DIR/active_sha"
-  [[ ! -f "$PLANE_GAME_RUNTIME_DIR/active_sha" && ! -f "$PLANE_GAME_RUNTIME_DIR/active/upstream.inc" ]]
+  if [[ -f "$PLANE_GAME_RUNTIME_DIR/active_sha" || -f "$PLANE_GAME_RUNTIME_DIR/active/upstream.inc" ]]; then
+    cleanup_incomplete=true
+  fi
+  if "$cleanup_incomplete"; then
+    return 1
+  fi
+  rm -f "$PLANE_GAME_PROMOTION_CONTEXT"
+}
+set_recovery_incomplete() {
+  if [[ -z "$old_sha" ]]; then recovery=revert_incomplete; else recovery=incomplete; fi
 }
 failed() {
   code="$?"
@@ -81,16 +142,16 @@ failed() {
   if [[ -z "$old_sha" ]]; then
     recovery=first_reverted
     deactivate_first_release ||
-      { echo 'ALERT: first release could not be safely deactivated' >&2; recovery=incomplete; }
+      { echo 'ALERT: first release could not be safely deactivated' >&2; recovery=revert_incomplete; }
   fi
-  restore_source || { echo 'ALERT: source restoration incomplete' >&2; recovery=incomplete; }
-  restore_attempt_marker || { echo 'ALERT: release attempt marker restoration incomplete' >&2; recovery=incomplete; }
+  restore_source || { echo 'ALERT: source restoration incomplete' >&2; set_recovery_incomplete; }
+  restore_attempt_marker || { echo 'ALERT: release attempt marker restoration incomplete' >&2; set_recovery_incomplete; }
   if [[ -n "$old_sha" ]]; then
     gateway=$(docker compose -p plane-game ps -q gateway 2>/dev/null || true)
     if [[ -z "$gateway" ]] || ! docker exec "$gateway" nginx -t >/dev/null 2>&1 ||
        ! docker exec "$gateway" nginx -s reload >/dev/null 2>&1; then
       echo 'ALERT: previous gateway configuration could not be restored' >&2
-      recovery=incomplete
+      set_recovery_incomplete
     fi
     if [[ -f "$PLANE_GAME_RUNTIME_DIR/active_sha" && $(<"$PLANE_GAME_RUNTIME_DIR/active_sha") != "$old_sha" ]]; then
       # A post-check failure must recover the recorded previous release.
@@ -100,21 +161,22 @@ failed() {
     if ! curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null ||
        [[ "$(curl -fsS "http://127.0.0.1:$port/version.json" 2>/dev/null)" != "{\"sha\":\"$old_sha\"}" ]]; then
       echo 'ALERT: prior healthy route not restored; investigate immediately' >&2
-      recovery=incomplete
+      set_recovery_incomplete
     fi
   else
     if [[ -f "$PLANE_GAME_RUNTIME_DIR/active_sha" ]]; then
       echo 'ALERT: first release left an active route; investigate immediately' >&2
-      recovery=incomplete
+      set_recovery_incomplete
     fi
   fi
   for record in "$PLANE_GAME_RUNTIME_DIR"/deployment-snapshots/*-"$sha"/state.env; do
     [[ -f "$record" ]] || continue
     if grep -q '^outcome=revert_incomplete$' "$record"; then
       echo 'ALERT: run-scoped resource cleanup is incomplete' >&2
-      recovery=incomplete
+      set_recovery_incomplete
     fi
   done
+  [[ -z "$old_sha" ]] || rm -f "$PLANE_GAME_PROMOTION_CONTEXT"
   printf 'sha=%s digest=%s gateway=%s time=%s health=failed recovery=%s\n' "$sha" "$digest" "$gateway_image" "$(date -u +%FT%TZ)" "$recovery" >&2
 }
 trap failed EXIT
@@ -133,6 +195,7 @@ order_attempt_updated=true
 printf '%s\n' "$attempt" > "$PLANE_GAME_RUNTIME_DIR/last_run_attempt"
 printf '%s\n' "$run" > "$PLANE_GAME_RUNTIME_DIR/last_run_number"
 order_attempt_updated=false
+rm -f "$PLANE_GAME_PROMOTION_CONTEXT"
 trap - EXIT
 printf 'sha=%s digest=%s gateway=%s time=%s health=healthy recovery=not_required run=%s attempt=%s\n' \
   "$sha" "$digest" "$gateway_image" "$(date -u +%FT%TZ)" "$run" "$attempt"

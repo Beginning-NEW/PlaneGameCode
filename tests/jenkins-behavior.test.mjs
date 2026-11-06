@@ -173,6 +173,7 @@ test('post-promote health failure restores the previous active release and order
   await writeFile(join(plane, 'compose.yaml'), 'services: {}\n');
   await writeFile(join(stage, 'compose.yaml'), 'services: {}\n');
   await copyFile(join(root, 'deploy/promote.sh'), join(stage, 'deploy/promote.sh'));
+  await copyFile(join(root, 'deploy/deployment-id.sh'), join(stage, 'deploy/deployment-id.sh'));
   await copyFile(join(root, 'deploy/check-release-order.sh'), join(stage, 'deploy/check-release-order.sh'));
   await executable(join(stage, 'deploy/plane-preflight'), '#!/usr/bin/env bash\nexit 0\n');
   await executable(join(stage, 'ops/jenkins/resource-gate.sh'), '#!/usr/bin/env bash\nexit 0\n');
@@ -254,6 +255,7 @@ test('post-CD resource gate failure restores the previous active release and ord
   await writeFile(join(plane, 'compose.yaml'), 'services: {}\n');
   await writeFile(join(stage, 'compose.yaml'), 'services: {}\n');
   await copyFile(join(root, 'deploy/promote.sh'), join(stage, 'deploy/promote.sh'));
+  await copyFile(join(root, 'deploy/deployment-id.sh'), join(stage, 'deploy/deployment-id.sh'));
   await copyFile(join(root, 'deploy/check-release-order.sh'), join(stage, 'deploy/check-release-order.sh'));
   await executable(join(stage, 'deploy/plane-preflight'), '#!/usr/bin/env bash\nexit 0\n');
   await executable(
@@ -314,44 +316,105 @@ fi
   assert.doesNotMatch(result.stderr, /ALERT:/);
 });
 
-test('first-release post-check failure removes the active route and marker', async () => {
+async function runFirstReleasePostCheckFailure({ candidateDeploymentId } = {}) {
   const work = await mkdtemp(join(tmpdir(), 'plane-first-post-check-'));
   const home = join(work, 'home');
   const plane = join(home, 'plane-game');
   const runtime = join(plane, 'runtime');
   const bin = join(work, 'bin');
+  const dockerState = join(work, 'docker-state');
+  const removeLog = join(work, 'removed.log');
   const nextSha = '5'.repeat(40);
   const digest = `sha256:${'6'.repeat(64)}`;
   const gateway = `nginxinc/nginx-unprivileged@sha256:${'7'.repeat(64)}`;
+  const candidateId = 'a'.repeat(64);
+  const gatewayId = 'b'.repeat(64);
+  const networkId = 'c'.repeat(64);
   const stage = join(plane, `incoming/${nextSha}-1-1`);
   await mkdir(join(stage, 'deploy'), { recursive: true });
   await mkdir(join(stage, 'ops/jenkins'), { recursive: true });
   await mkdir(join(plane, 'deploy'), { recursive: true });
   await mkdir(runtime, { recursive: true });
   await mkdir(bin);
+  await mkdir(dockerState);
   await writeFile(join(stage, 'compose.yaml'), 'services: {}\n');
   await copyFile(join(root, 'deploy/promote.sh'), join(stage, 'deploy/promote.sh'));
+  await copyFile(join(root, 'deploy/deployment-id.sh'), join(stage, 'deploy/deployment-id.sh'));
   await copyFile(join(root, 'deploy/check-release-order.sh'), join(stage, 'deploy/check-release-order.sh'));
   await executable(join(stage, 'deploy/plane-preflight'), '#!/usr/bin/env bash\nexit 0\n');
-  await executable(join(stage, 'ops/jenkins/resource-gate.sh'), '#!/usr/bin/env bash\nexit 0\n');
+  await executable(
+    join(stage, 'ops/jenkins/resource-gate.sh'),
+    '#!/usr/bin/env bash\necho "post-cd resource gate injected failure" >&2\nexit 42\n',
+  );
   await executable(join(stage, 'deploy/deploy.sh'), `#!/usr/bin/env bash
-mkdir -p "$PLANE_GAME_RUNTIME_DIR/active"
+source "$(dirname "$0")/deployment-id.sh"
+deployment_id=$(new_deployment_id "$1")
+mkdir -p "$PLANE_GAME_RUNTIME_DIR/active" "$(dirname "$PLANE_GAME_PROMOTION_CONTEXT")"
 printf '%s\\n' "$1" > "$PLANE_GAME_RUNTIME_DIR/active_sha"
 printf 'set backend\\n' > "$PLANE_GAME_RUNTIME_DIR/active/upstream.inc"
+cat > "$PLANE_GAME_PROMOTION_CONTEXT" <<EOF
+release_sha=${nextSha}
+image_digest=${digest}
+deployment_id=$deployment_id
+candidate_id=${candidateId}
+gateway_id=${gatewayId}
+network_id=${networkId}
+network_created=true
+EOF
+touch "$MOCK_DOCKER_STATE/${candidateId}" "$MOCK_DOCKER_STATE/${gatewayId}" "$MOCK_DOCKER_STATE/${networkId}"
 `);
   await executable(join(bin, 'id'), `#!/usr/bin/env bash
 if [[ "$1" == '-un' ]]; then printf 'plane-preflight\\n'; else printf '1001\\n'; fi
 `);
   await executable(join(bin, 'flock'), '#!/usr/bin/env bash\nexit 0\n');
   await executable(join(bin, 'docker'), `#!/usr/bin/env bash
+state="$MOCK_DOCKER_STATE"
+last="\${!#}"
+deployment_id=$(sed -n 's/^deployment_id=//p' "$PLANE_GAME_PROMOTION_CONTEXT")
 case "$1" in
   info) printf '["name=rootless"]\\n' ;;
-  compose) printf 'gateway\\n' ;;
-  rm) exit 0 ;;
+  container)
+    [[ "$2" == inspect && -f "$state/$last" ]] || exit 1
+    if [[ "$3" == --format ]]; then
+      if [[ "$last" == '${gatewayId}' ]]; then
+        printf '%s %s plane-game gateway\\n' "$last" "$deployment_id"
+      elif [[ "$last" == '${candidateId}' ]]; then
+        printf '%s %s %s %s\\n' "$last" "\${MOCK_CANDIDATE_DEPLOYMENT_ID:-$deployment_id}" '${nextSha}' '${digest}'
+      else
+        exit 1
+      fi
+    fi
+    ;;
+  network)
+    if [[ "$2" == inspect ]]; then
+      [[ -f "$state/$last" ]] || exit 1
+      if [[ "$3" == --format ]]; then
+        printf '%s %s plane-game default\\n' "$last" "$deployment_id"
+      fi
+    elif [[ "$2" == rm ]]; then
+      printf 'network:%s\\n' "$last" >> "$MOCK_REMOVE_LOG"
+      rm -f "$state/$last"
+    else
+      exit 1
+    fi
+    ;;
+  rm)
+    printf 'container:%s\\n' "$last" >> "$MOCK_REMOVE_LOG"
+    rm -f "$state/$last"
+    ;;
   *) exit 0 ;;
 esac
 `);
-  await executable(join(bin, 'curl'), '#!/usr/bin/env bash\nexit 22\n');
+  await executable(join(bin, 'curl'), `#!/usr/bin/env bash
+url="\${!#}"
+if [[ "$url" == */healthz ]]; then
+  printf 'ok\\n'
+elif [[ "$url" == */version.json ]]; then
+  printf '{"sha":"${nextSha}"}'
+else
+  exit 2
+fi
+`);
   const result = run(join(stage, 'deploy/promote.sh'), [
     nextSha,
     'ghcr.io/beginning-new/planegamecode',
@@ -364,11 +427,68 @@ esac
   ], {
     cwd: plane,
     bin,
-    env: { HOME: home },
+    env: {
+      HOME: home,
+      MOCK_DOCKER_STATE: dockerState,
+      MOCK_REMOVE_LOG: removeLog,
+      MOCK_CANDIDATE_DEPLOYMENT_ID: candidateDeploymentId ?? '',
+    },
   });
+  const removed = existsSync(removeLog)
+    ? (await readFile(removeLog, 'utf8')).trim().split(/\r?\n/).filter(Boolean)
+    : [];
+  return {
+    result,
+    runtime,
+    dockerState,
+    removed,
+    candidateId,
+    gatewayId,
+    networkId,
+    promotionContext: join(runtime, `promotion-context/1-1-${nextSha}.env`),
+  };
+}
+
+test('first-release post-check failure removes every resource owned by the run', async () => {
+  const {
+    result,
+    runtime,
+    dockerState,
+    removed,
+    candidateId,
+    gatewayId,
+    networkId,
+    promotionContext,
+  } = await runFirstReleasePostCheckFailure();
   assert.notEqual(result.status, 0);
+  assert.equal(result.status, 42, `stdout=${result.stdout}\nstderr=${result.stderr}`);
   assert.equal(existsSync(join(runtime, 'active_sha')), false);
   assert.equal(existsSync(join(runtime, 'active/upstream.inc')), false);
+  assert.equal(existsSync(join(dockerState, gatewayId)), false);
+  assert.equal(existsSync(join(dockerState, candidateId)), false);
+  assert.equal(existsSync(join(dockerState, networkId)), false);
+  assert.equal(existsSync(promotionContext), false);
+  assert.deepEqual(removed, [
+    `container:${gatewayId}`,
+    `container:${candidateId}`,
+    `network:${networkId}`,
+  ]);
   assert.match(result.stderr, /health=failed recovery=first_reverted/);
   assert.doesNotMatch(result.stderr, /ALERT:/);
+});
+
+test('first-release recovery preserves ambiguously owned resources and reports incomplete', async () => {
+  const ambiguousDeploymentId = `${'f'.repeat(12)}-20261106T000000Z-999`;
+  const { result, runtime, dockerState, removed, candidateId, gatewayId, networkId, promotionContext } =
+    await runFirstReleasePostCheckFailure({ candidateDeploymentId: ambiguousDeploymentId });
+  assert.equal(result.status, 42, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.equal(existsSync(join(runtime, 'active_sha')), false);
+  assert.equal(existsSync(join(runtime, 'active/upstream.inc')), false);
+  assert.equal(existsSync(join(dockerState, gatewayId)), false);
+  assert.equal(existsSync(join(dockerState, candidateId)), true);
+  assert.equal(existsSync(join(dockerState, networkId)), true);
+  assert.equal(existsSync(promotionContext), true);
+  assert.deepEqual(removed, [`container:${gatewayId}`]);
+  assert.match(result.stderr, /ALERT: first release could not be safely deactivated/);
+  assert.match(result.stderr, /health=failed recovery=revert_incomplete/);
 });
