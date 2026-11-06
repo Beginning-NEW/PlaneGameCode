@@ -62,9 +62,9 @@ export class FileSecretProvider {
 
 export class DeliveryStore {
   constructor(path, { now = () => new Date().toISOString() } = {}) {
+    this.path = path;
     this.now = now;
-    this.db = new DatabaseSync(path);
-    this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;');
+    this.db = this.openConnection();
     let columns = this.db.prepare(`PRAGMA table_info('webhook_deliveries')`).all();
     if (columns.length > 0 && !columns.some((column) => column.name === 'queue_id')) {
       this.migrateLegacySchema();
@@ -82,6 +82,12 @@ export class DeliveryStore {
       SET state = 'failed', retryable = 1, error_code = 'gateway_restart_before_submit', updated_at = ?
       WHERE state = 'dispatching'
     `).run(this.now());
+  }
+
+  openConnection() {
+    const db = new DatabaseSync(this.path);
+    db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;');
+    return db;
   }
 
   createSchema() {
@@ -212,7 +218,8 @@ export class DeliveryStore {
     const timestamp = this.now();
     const result = this.db.prepare(`
       UPDATE webhook_deliveries
-      SET state = 'submitted', retryable = 0, submitted_at = ?, error_code = NULL, updated_at = ?
+      SET state = 'submitted', retryable = 0, submitted_at = ?,
+          error_code = 'enqueue_outcome_pending', updated_at = ?
       WHERE delivery_id = ? AND state = 'dispatching'
     `).run(timestamp, timestamp, deliveryId);
     if (result.changes !== 1) throw Object.assign(new Error('state transition failed'), { code: 'state_write_failed' });
@@ -289,7 +296,12 @@ export class DeliveryStore {
         try {
           this.recordReconciliationError(deliveryId, error.code);
           error.auditRecorded = true;
-        } catch {}
+        } catch (auditError) {
+          throw Object.assign(new Error('audit persistence failed'), {
+            code: 'audit_persistence_failed',
+            cause: auditError,
+          });
+        }
       }
       throw error;
     }
@@ -301,7 +313,32 @@ export class DeliveryStore {
 
   recordReconciliationError(deliveryId, errorCode) {
     const timestamp = this.now();
-    const result = this.db.prepare(`
+    try {
+      return this.writeReconciliationError(this.db, deliveryId, errorCode, timestamp);
+    } catch (primaryError) {
+      let recoveryDb;
+      try {
+        recoveryDb = this.openConnection();
+        const record = this.writeReconciliationError(recoveryDb, deliveryId, errorCode, timestamp);
+        const failedDb = this.db;
+        this.db = recoveryDb;
+        recoveryDb = null;
+        if (failedDb.isOpen) failedDb.close();
+        return record;
+      } catch (recoveryError) {
+        throw Object.assign(new Error('audit persistence failed'), {
+          code: 'audit_persistence_failed',
+          cause: recoveryError,
+          primaryError,
+        });
+      } finally {
+        if (recoveryDb?.isOpen) recoveryDb.close();
+      }
+    }
+  }
+
+  writeReconciliationError(db, deliveryId, errorCode, timestamp) {
+    const result = db.prepare(`
       UPDATE webhook_deliveries
       SET retryable = 0, last_reconciled_at = ?, reconcile_count = reconcile_count + 1,
           error_code = ?, updated_at = ?
@@ -310,7 +347,7 @@ export class DeliveryStore {
     if (result.changes !== 1) {
       throw Object.assign(new Error('state transition failed'), { code: 'state_write_failed' });
     }
-    return this.get(deliveryId);
+    return db.prepare('SELECT * FROM webhook_deliveries WHERE delivery_id = ?').get(deliveryId);
   }
 
   markSubmissionError(deliveryId, errorCode) {
@@ -346,6 +383,16 @@ export class WebhookAdmission {
     this.store = store;
     this.enqueuer = enqueuer;
     this.logger = logger;
+  }
+
+  recordAudit(deliveryId, code) {
+    try {
+      this.store.recordReconciliationError(deliveryId, code);
+      return true;
+    } catch {
+      this.logger({ outcome: 'failed', code: 'audit_persistence_failed' });
+      return false;
+    }
   }
 
   async handle({ rawBody, signature, deliveryId, event }) {
@@ -408,10 +455,12 @@ export class WebhookAdmission {
         this.logger({ outcome: 'reconciled', code });
         return response(202, code);
       } catch (error) {
-        if (!error?.auditRecorded) {
-          try {
-            this.store.recordReconciliationError(deliveryId, safeErrorCode(error));
-          } catch {}
+        if (error?.code === 'audit_persistence_failed' ||
+            (!error?.auditRecorded && !this.recordAudit(deliveryId, safeErrorCode(error)))) {
+          if (error?.code === 'audit_persistence_failed') {
+            this.logger({ outcome: 'failed', code: 'audit_persistence_failed' });
+          }
+          return response(503, 'audit_persistence_failed');
         }
         this.logger({ outcome: 'failed', code: 'reconcile_failed' });
         return response(503, 'reconcile_failed');
@@ -432,9 +481,9 @@ export class WebhookAdmission {
     try {
       queued = await this.enqueuer.enqueue({ deliveryId, ...candidate });
     } catch (error) {
-      try {
-        this.store.markSubmissionError(deliveryId, safeErrorCode(error));
-      } catch {}
+      if (!this.recordAudit(deliveryId, safeErrorCode(error))) {
+        return response(503, 'audit_persistence_failed');
+      }
       this.logger({ outcome: 'pending', code: 'enqueue_outcome_unknown' });
       return response(503, 'enqueue_outcome_unknown');
     }
@@ -442,9 +491,9 @@ export class WebhookAdmission {
     try {
       this.store.markQueued(deliveryId, queued);
     } catch {
-      try {
-        this.store.recordReconciliationError(deliveryId, 'queue_identity_persistence_failed');
-      } catch {}
+      if (!this.recordAudit(deliveryId, 'queue_identity_persistence_failed')) {
+        return response(503, 'audit_persistence_failed');
+      }
       this.logger({ outcome: 'failed', code: 'state_write_failed' });
       return response(503, 'state_write_failed');
     }

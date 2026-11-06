@@ -157,6 +157,9 @@ test('an ambiguous enqueue failure is quarantined and never automatically posted
   const { admission, store } = await fixture(t, { enqueuer });
   assert.equal((await admission.handle(request())).body.code, 'enqueue_outcome_unknown');
   assert.equal(store.get(delivery).state, 'submitted');
+  assert.equal(store.get(delivery).error_code, 'jenkins_unavailable');
+  assert.equal(store.get(delivery).reconcile_count, 1);
+  assert.ok(store.get(delivery).last_reconciled_at);
   assert.equal((await admission.handle(request())).body.code, 'submitted_unknown');
   assert.deepEqual(enqueuer.calls, { enqueue: 1, reconcile: 1 });
   assert.equal(store.get(delivery).retry_count, 0);
@@ -242,6 +245,51 @@ test('a confirmed enqueue with a queued-state write failure never posts a second
   assert.equal(base.store.get(delivery).error_code, 'submitted_unknown');
   assert.equal(base.store.get(delivery).reconcile_count, 2);
   assert.deepEqual(enqueuer.calls, { enqueue: 1, reconcile: 1 });
+});
+
+test('a read-only primary connection after Jenkins accepts the build recovers a durable audit without reposting', async (t) => {
+  const enqueuer = fakeEnqueuer({ reconcile: () => null });
+  const base = await fixture(t, { enqueuer });
+  const original = base.store.markQueued.bind(base.store);
+  base.store.markQueued = (...args) => {
+    base.store.db.exec('PRAGMA query_only = ON');
+    return original(...args);
+  };
+
+  assert.equal((await base.admission.handle(request())).body.code, 'state_write_failed');
+  assert.deepEqual(
+    {
+      state: base.store.get(delivery).state,
+      errorCode: base.store.get(delivery).error_code,
+      reconcileCount: base.store.get(delivery).reconcile_count,
+      hasReconciledAt: Boolean(base.store.get(delivery).last_reconciled_at),
+    },
+    {
+      state: 'submitted',
+      errorCode: 'queue_identity_persistence_failed',
+      reconcileCount: 1,
+      hasReconciledAt: true,
+    },
+  );
+  assert.equal((await base.admission.handle(request())).body.code, 'submitted_unknown');
+  assert.equal(base.store.get(delivery).reconcile_count, 2);
+  assert.deepEqual(enqueuer.calls, { enqueue: 1, reconcile: 1 });
+});
+
+test('a post-accept audit failure is explicit instead of being swallowed', async (t) => {
+  const base = await fixture(t);
+  base.store.markQueued = () => {
+    throw Object.assign(new Error('disk full'), { code: 'SQLITE_FULL' });
+  };
+  base.store.recordReconciliationError = () => {
+    throw Object.assign(new Error('disk full'), { code: 'audit_persistence_failed' });
+  };
+
+  assert.equal((await base.admission.handle(request())).body.code, 'audit_persistence_failed');
+  assert.deepEqual(base.logs.at(-1), { outcome: 'failed', code: 'audit_persistence_failed' });
+  assert.equal(base.store.get(delivery).state, 'submitted');
+  assert.equal(base.store.get(delivery).error_code, 'enqueue_outcome_pending');
+  assert.deepEqual(base.enqueuer.calls, { enqueue: 1, reconcile: 0 });
 });
 
 test('legacy ambiguous rows migrate to non-retryable submitted state', async (t) => {
