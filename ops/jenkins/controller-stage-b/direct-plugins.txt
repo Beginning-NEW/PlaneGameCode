@@ -1,0 +1,11 @@
+# Exact direct plugins for Jenkins 2.580.2 Stage B. Keep sorted.
+configuration-as-code:2147.v8a_8d38668c72
+credentials-binding:728.v902a_273b_8947
+git:5.11.0
+job-dsl:3732.v9a_c49a_61a_313
+lockable-resources:1582.v54e3b_a_8eda_3a_
+matrix-auth:3.3
+pipeline-model-definition:2.2293.v6e7193cec599
+ssh-slaves:3.1097.v868116049892
+timestamper:1.30
+trilead-api:2.209.v0e69b_c43c245
