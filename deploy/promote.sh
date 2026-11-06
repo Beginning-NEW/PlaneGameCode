@@ -92,7 +92,7 @@ deactivate_first_release() {
           ( "$network_created" != true && "$network_created" != false ) ||
           ( "$network_created" == true && ! "$network_id" =~ ^[a-f0-9]{64}$ ) ||
           ( "$network_created" == false && -n "$network_id" ) ]] ||
-       ! valid_deployment_id "$deployment_id"; then
+       ! valid_deployment_id "$deployment_id" "$sha"; then
       cleanup_incomplete=true
     else
       if docker container inspect "$gateway_id" >/dev/null 2>&1; then
