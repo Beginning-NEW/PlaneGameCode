@@ -40,9 +40,40 @@ snapshot_deployment_state "$RELEASE_SHA"
 container="plane-game-$RELEASE_SHA"
 deployment_id="${RELEASE_SHA:0:12}-$(date -u +%Y%m%dT%H%M%S)-$$"
 export PLANE_GAME_DEPLOYMENT_ID="$deployment_id"
+promotion_context="${PLANE_GAME_PROMOTION_CONTEXT:-}"
 network_id=''
 candidate_id=''
 gateway_id=''
+
+write_promotion_context() {
+  local context_dir temp
+  [[ -n "$promotion_context" ]] || return 0
+  context_dir=$(dirname -- "$promotion_context")
+  [[ "$context_dir" == "$RUNTIME_DIR/promotion-context" ]] || {
+    log 'promotion context must be inside the runtime promotion-context directory'
+    return 1
+  }
+  [[ $(basename -- "$promotion_context") =~ ^[1-9][0-9]*-[1-9][0-9]*-[a-f0-9]{40}\.env$ ]] || {
+    log 'promotion context filename is invalid'
+    return 1
+  }
+  mkdir -p "$context_dir"
+  temp=$(mktemp "$context_dir/.promotion.XXXXXX") || return 1
+  {
+    printf 'release_sha=%s\n' "$RELEASE_SHA"
+    printf 'image_digest=%s\n' "$IMAGE_DIGEST"
+    printf 'deployment_id=%s\n' "$deployment_id"
+    printf 'candidate_id=%s\n' "$candidate_id"
+    printf 'gateway_id=%s\n' "$gateway_id"
+    printf 'network_id=%s\n' "$network_id"
+    if [[ -n "$network_id" ]]; then
+      printf 'network_created=true\n'
+    else
+      printf 'network_created=false\n'
+    fi
+  } > "$temp" || { rm -f "$temp"; return 1; }
+  mv -f "$temp" "$promotion_context"
+}
 
 candidate_owned_by_run() {
   local id="$1" actual
@@ -233,6 +264,7 @@ fi
 switch_to "$RELEASE_SHA" || cleanup_failure 'route switch verification failed'
 write_release_record "$RELEASE_SHA"
 if [[ -n "$old_sha" ]]; then printf '%s\n' "$old_sha" > "$RUNTIME_DIR/previous_healthy_sha"; fi
+write_promotion_context || cleanup_failure 'promotion context could not be recorded'
 printf '%s\n' "$RELEASE_SHA" > "$RUNTIME_DIR/active_sha"
 record_snapshot_outcome 'deployed' 'candidate healthy and route verified'
 printf 'deployment healthy: sha=%s digest=%s gateway=%s config_revision=%s health=healthy port=127.0.0.1:%s time=%s\n' \
