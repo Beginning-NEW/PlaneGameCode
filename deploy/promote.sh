@@ -14,8 +14,9 @@ export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
 docker info --format '{{json .SecurityOptions}}' | grep -q rootless || { echo 'Rootless Docker is required' >&2; exit 1; }
 root="$HOME/plane-game"
 stage="$root/incoming/$sha-$run-$attempt"
-[[ "$PWD" == "$root" && -f "$stage/compose.yaml" && -f "$stage/deploy/deploy.sh" ]] || exit 1
+[[ "$PWD" == "$root" && -f "$stage/compose.yaml" && -f "$stage/deploy/deploy.sh" && -f "$stage/deploy/deployment-id.sh" ]] || exit 1
 [[ -z "$(find "$stage" -type l -print -quit)" ]] || { echo 'Source archive contains a symlink' >&2; exit 1; }
+source "$stage/deploy/deployment-id.sh"
 [[ "$post_cd_resource_gate_ref" == ops/jenkins/resource-gate.sh ]] || {
   echo 'Post-CD resource gate is not the candidate-owned reviewed script' >&2
   exit 1
@@ -87,11 +88,11 @@ deactivate_first_release() {
     network_id=$(promotion_value network_id)
     network_created=$(promotion_value network_created)
     if [[ "$(promotion_value release_sha)" != "$sha" || "$(promotion_value image_digest)" != "$digest" ||
-          ! "$deployment_id" =~ ^[a-f0-9]{12}-[0-9]{8}T[0-9]{6}Z-[0-9]+$ ||
           ! "$candidate_id" =~ ^[a-f0-9]{64}$ || ! "$gateway_id" =~ ^[a-f0-9]{64}$ ||
           ( "$network_created" != true && "$network_created" != false ) ||
           ( "$network_created" == true && ! "$network_id" =~ ^[a-f0-9]{64}$ ) ||
-          ( "$network_created" == false && -n "$network_id" ) ]]; then
+          ( "$network_created" == false && -n "$network_id" ) ]] ||
+       ! valid_deployment_id "$deployment_id"; then
       cleanup_incomplete=true
     else
       if docker container inspect "$gateway_id" >/dev/null 2>&1; then
