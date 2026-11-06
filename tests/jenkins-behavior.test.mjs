@@ -316,7 +316,7 @@ fi
   assert.doesNotMatch(result.stderr, /ALERT:/);
 });
 
-async function runFirstReleasePostCheckFailure({ candidateDeploymentId } = {}) {
+async function runFirstReleasePostCheckFailure({ candidateDeploymentId, contextDeploymentId } = {}) {
   const work = await mkdtemp(join(tmpdir(), 'plane-first-post-check-'));
   const home = join(work, 'home');
   const plane = join(home, 'plane-game');
@@ -330,6 +330,7 @@ async function runFirstReleasePostCheckFailure({ candidateDeploymentId } = {}) {
   const candidateId = 'a'.repeat(64);
   const gatewayId = 'b'.repeat(64);
   const networkId = 'c'.repeat(64);
+  const unrelatedId = 'd'.repeat(64);
   const stage = join(plane, `incoming/${nextSha}-1-1`);
   await mkdir(join(stage, 'deploy'), { recursive: true });
   await mkdir(join(stage, 'ops/jenkins'), { recursive: true });
@@ -349,6 +350,7 @@ async function runFirstReleasePostCheckFailure({ candidateDeploymentId } = {}) {
   await executable(join(stage, 'deploy/deploy.sh'), `#!/usr/bin/env bash
 source "$(dirname "$0")/deployment-id.sh"
 deployment_id=$(new_deployment_id "$1")
+[[ -z "\${MOCK_CONTEXT_DEPLOYMENT_ID:-}" ]] || deployment_id="$MOCK_CONTEXT_DEPLOYMENT_ID"
 mkdir -p "$PLANE_GAME_RUNTIME_DIR/active" "$(dirname "$PLANE_GAME_PROMOTION_CONTEXT")"
 printf '%s\\n' "$1" > "$PLANE_GAME_RUNTIME_DIR/active_sha"
 printf 'set backend\\n' > "$PLANE_GAME_RUNTIME_DIR/active/upstream.inc"
@@ -361,7 +363,7 @@ gateway_id=${gatewayId}
 network_id=${networkId}
 network_created=true
 EOF
-touch "$MOCK_DOCKER_STATE/${candidateId}" "$MOCK_DOCKER_STATE/${gatewayId}" "$MOCK_DOCKER_STATE/${networkId}"
+touch "$MOCK_DOCKER_STATE/${candidateId}" "$MOCK_DOCKER_STATE/${gatewayId}" "$MOCK_DOCKER_STATE/${networkId}" "$MOCK_DOCKER_STATE/${unrelatedId}"
 `);
   await executable(join(bin, 'id'), `#!/usr/bin/env bash
 if [[ "$1" == '-un' ]]; then printf 'plane-preflight\\n'; else printf '1001\\n'; fi
@@ -432,6 +434,7 @@ fi
       MOCK_DOCKER_STATE: dockerState,
       MOCK_REMOVE_LOG: removeLog,
       MOCK_CANDIDATE_DEPLOYMENT_ID: candidateDeploymentId ?? '',
+      MOCK_CONTEXT_DEPLOYMENT_ID: contextDeploymentId ?? '',
     },
   });
   const removed = existsSync(removeLog)
@@ -445,6 +448,7 @@ fi
     candidateId,
     gatewayId,
     networkId,
+    unrelatedId,
     promotionContext: join(runtime, `promotion-context/1-1-${nextSha}.env`),
   };
 }
@@ -458,6 +462,7 @@ test('first-release post-check failure removes every resource owned by the run',
     candidateId,
     gatewayId,
     networkId,
+    unrelatedId,
     promotionContext,
   } = await runFirstReleasePostCheckFailure();
   assert.notEqual(result.status, 0);
@@ -467,6 +472,7 @@ test('first-release post-check failure removes every resource owned by the run',
   assert.equal(existsSync(join(dockerState, gatewayId)), false);
   assert.equal(existsSync(join(dockerState, candidateId)), false);
   assert.equal(existsSync(join(dockerState, networkId)), false);
+  assert.equal(existsSync(join(dockerState, unrelatedId)), true);
   assert.equal(existsSync(promotionContext), false);
   assert.deepEqual(removed, [
     `container:${gatewayId}`,
@@ -475,6 +481,37 @@ test('first-release post-check failure removes every resource owned by the run',
   ]);
   assert.match(result.stderr, /health=failed recovery=first_reverted/);
   assert.doesNotMatch(result.stderr, /ALERT:/);
+});
+
+test('first-release recovery rejects invalid deployment IDs before Docker deletion', async () => {
+  for (const contextDeploymentId of [
+    `${'5'.repeat(12)}-20260230T000000Z-999`,
+    `${'5'.repeat(12)}-20261106T000000Z-0`,
+    `${'f'.repeat(12)}-20261106T000000Z-999`,
+  ]) {
+    const {
+      result,
+      runtime,
+      dockerState,
+      removed,
+      candidateId,
+      gatewayId,
+      networkId,
+      unrelatedId,
+      promotionContext,
+    } = await runFirstReleasePostCheckFailure({ contextDeploymentId });
+    assert.equal(result.status, 42, `deployment_id=${contextDeploymentId}\nstdout=${result.stdout}\nstderr=${result.stderr}`);
+    assert.equal(existsSync(join(runtime, 'active_sha')), false);
+    assert.equal(existsSync(join(runtime, 'active/upstream.inc')), false);
+    assert.equal(existsSync(join(dockerState, gatewayId)), true);
+    assert.equal(existsSync(join(dockerState, candidateId)), true);
+    assert.equal(existsSync(join(dockerState, networkId)), true);
+    assert.equal(existsSync(join(dockerState, unrelatedId)), true);
+    assert.equal(existsSync(promotionContext), true);
+    assert.deepEqual(removed, []);
+    assert.match(result.stderr, /ALERT: first release could not be safely deactivated/);
+    assert.match(result.stderr, /health=failed recovery=revert_incomplete/);
+  }
 });
 
 test('first-release recovery preserves ambiguously owned resources and reports incomplete', async () => {
