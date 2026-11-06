@@ -99,7 +99,7 @@ exit 2
 
   const localDeploy = await readFile(join(root, 'ops/jenkins/deploy-local.sh'), 'utf8');
   const pull = localDeploy.indexOf('docker pull "$gateway_image"');
-  const gate = localDeploy.indexOf('resource-gate.sh');
+  const gate = localDeploy.indexOf('bash ops/jenkins/resource-gate.sh');
   const revalidate = localDeploy.indexOf('pre-promote-check.sh');
   const promote = localDeploy.indexOf('bash "$stage/deploy/promote.sh"');
   assert.ok(pull >= 0 && pull < gate && gate < revalidate && revalidate < promote);
@@ -117,6 +117,7 @@ test('post-promote health failure restores the previous active release and order
   const gateway = `nginxinc/nginx-unprivileged@sha256:${'4'.repeat(64)}`;
   const stage = join(plane, `incoming/${nextSha}-11-1`);
   await mkdir(join(stage, 'deploy'), { recursive: true });
+  await mkdir(join(stage, 'ops/jenkins'), { recursive: true });
   await mkdir(join(plane, 'deploy'), { recursive: true });
   await mkdir(runtime, { recursive: true });
   await mkdir(bin);
@@ -128,6 +129,7 @@ test('post-promote health failure restores the previous active release and order
   await copyFile(join(root, 'deploy/promote.sh'), join(stage, 'deploy/promote.sh'));
   await copyFile(join(root, 'deploy/check-release-order.sh'), join(stage, 'deploy/check-release-order.sh'));
   await executable(join(stage, 'deploy/plane-preflight'), '#!/usr/bin/env bash\nexit 0\n');
+  await executable(join(stage, 'ops/jenkins/resource-gate.sh'), '#!/usr/bin/env bash\nexit 0\n');
   await executable(join(stage, 'deploy/deploy.sh'), `#!/usr/bin/env bash
 printf '%s\\n' "$1" > "$PLANE_GAME_RUNTIME_DIR/active_sha"
 `);
@@ -167,6 +169,7 @@ fi
     '11',
     '1',
     gateway,
+    'ops/jenkins/resource-gate.sh',
   ], {
     cwd: plane,
     bin,
@@ -183,6 +186,88 @@ fi
   assert.doesNotMatch(result.stderr, /ALERT:/);
 });
 
+test('post-CD resource gate failure restores the previous active release and order marker', async () => {
+  const work = await mkdtemp(join(tmpdir(), 'plane-post-resource-gate-'));
+  const home = join(work, 'home');
+  const plane = join(home, 'plane-game');
+  const runtime = join(plane, 'runtime');
+  const bin = join(work, 'bin');
+  const oldSha = '8'.repeat(40);
+  const nextSha = '9'.repeat(40);
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const gateway = `nginxinc/nginx-unprivileged@sha256:${'b'.repeat(64)}`;
+  const stage = join(plane, `incoming/${nextSha}-21-1`);
+  await mkdir(join(stage, 'deploy'), { recursive: true });
+  await mkdir(join(stage, 'ops/jenkins'), { recursive: true });
+  await mkdir(join(plane, 'deploy'), { recursive: true });
+  await mkdir(runtime, { recursive: true });
+  await mkdir(bin);
+  await writeFile(join(runtime, 'active_sha'), `${oldSha}\n`);
+  await writeFile(join(runtime, 'last_run_number'), '20\n');
+  await writeFile(join(runtime, 'last_run_attempt'), '1\n');
+  await writeFile(join(plane, 'compose.yaml'), 'services: {}\n');
+  await writeFile(join(stage, 'compose.yaml'), 'services: {}\n');
+  await copyFile(join(root, 'deploy/promote.sh'), join(stage, 'deploy/promote.sh'));
+  await copyFile(join(root, 'deploy/check-release-order.sh'), join(stage, 'deploy/check-release-order.sh'));
+  await executable(join(stage, 'deploy/plane-preflight'), '#!/usr/bin/env bash\nexit 0\n');
+  await executable(
+    join(stage, 'ops/jenkins/resource-gate.sh'),
+    '#!/usr/bin/env bash\necho "post-cd resource gate injected failure" >&2\nexit 42\n',
+  );
+  await executable(join(stage, 'deploy/deploy.sh'), `#!/usr/bin/env bash
+printf '%s\n' "$1" > "$PLANE_GAME_RUNTIME_DIR/active_sha"
+`);
+  await executable(join(plane, 'deploy/rollback.sh'), `#!/usr/bin/env bash
+printf '%s\n' "$1" > "$PLANE_GAME_RUNTIME_DIR/active_sha"
+`);
+  await executable(join(bin, 'id'), `#!/usr/bin/env bash
+if [[ "$1" == '-un' ]]; then printf 'plane-preflight\n'; else printf '1001\n'; fi
+`);
+  await executable(join(bin, 'flock'), '#!/usr/bin/env bash\nexit 0\n');
+  await executable(join(bin, 'docker'), `#!/usr/bin/env bash
+case "$1" in
+  info) printf '["name=rootless"]\n' ;;
+  compose) printf 'gateway\n' ;;
+  exec) exit 0 ;;
+  *) exit 0 ;;
+esac
+`);
+  await executable(join(bin, 'curl'), `#!/usr/bin/env bash
+url=''
+for arg in "$@"; do url="$arg"; done
+active=$(<"$PLANE_GAME_RUNTIME_DIR/active_sha")
+if [[ "$url" == */healthz ]]; then
+  printf 'ok\n'
+elif [[ "$url" == */version.json ]]; then
+  printf '{"sha":"%s"}' "$active"
+else
+  exit 2
+fi
+`);
+  const result = run(join(stage, 'deploy/promote.sh'), [
+    nextSha,
+    'ghcr.io/beginning-new/planegamecode',
+    digest,
+    '8080',
+    '21',
+    '1',
+    gateway,
+    'ops/jenkins/resource-gate.sh',
+  ], {
+    cwd: plane,
+    bin,
+    env: { HOME: home },
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 42, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.equal((await readFile(join(runtime, 'active_sha'), 'utf8')).trim(), oldSha);
+  assert.equal((await readFile(join(runtime, 'last_run_number'), 'utf8')).trim(), '20');
+  assert.equal((await readFile(join(runtime, 'last_run_attempt'), 'utf8')).trim(), '1');
+  assert.match(result.stderr, /post-cd resource gate injected failure/);
+  assert.match(result.stderr, /health=failed recovery=restored/);
+  assert.doesNotMatch(result.stderr, /ALERT:/);
+});
+
 test('first-release post-check failure removes the active route and marker', async () => {
   const work = await mkdtemp(join(tmpdir(), 'plane-first-post-check-'));
   const home = join(work, 'home');
@@ -194,6 +279,7 @@ test('first-release post-check failure removes the active route and marker', asy
   const gateway = `nginxinc/nginx-unprivileged@sha256:${'7'.repeat(64)}`;
   const stage = join(plane, `incoming/${nextSha}-1-1`);
   await mkdir(join(stage, 'deploy'), { recursive: true });
+  await mkdir(join(stage, 'ops/jenkins'), { recursive: true });
   await mkdir(join(plane, 'deploy'), { recursive: true });
   await mkdir(runtime, { recursive: true });
   await mkdir(bin);
@@ -201,6 +287,7 @@ test('first-release post-check failure removes the active route and marker', asy
   await copyFile(join(root, 'deploy/promote.sh'), join(stage, 'deploy/promote.sh'));
   await copyFile(join(root, 'deploy/check-release-order.sh'), join(stage, 'deploy/check-release-order.sh'));
   await executable(join(stage, 'deploy/plane-preflight'), '#!/usr/bin/env bash\nexit 0\n');
+  await executable(join(stage, 'ops/jenkins/resource-gate.sh'), '#!/usr/bin/env bash\nexit 0\n');
   await executable(join(stage, 'deploy/deploy.sh'), `#!/usr/bin/env bash
 mkdir -p "$PLANE_GAME_RUNTIME_DIR/active"
 printf '%s\\n' "$1" > "$PLANE_GAME_RUNTIME_DIR/active_sha"
@@ -227,6 +314,7 @@ esac
     '1',
     '1',
     gateway,
+    'ops/jenkins/resource-gate.sh',
   ], {
     cwd: plane,
     bin,

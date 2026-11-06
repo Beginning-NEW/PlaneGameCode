@@ -71,7 +71,8 @@ pipeline {
               set -eu
               bash ops/jenkins/deploy-local.sh \
                 "$CANDIDATE_SHA" "$IMAGE_REPOSITORY" "$IMAGE_DIGEST" "$DEPLOY_PORT" \
-                "$ACTIONS_RUN_ID" "$ACTIONS_RUN_NUMBER" "$ACTIONS_RUN_ATTEMPT" "$GATEWAY_IMAGE"
+                "$ACTIONS_RUN_ID" "$ACTIONS_RUN_NUMBER" "$ACTIONS_RUN_ATTEMPT" "$GATEWAY_IMAGE" \
+                "ops/jenkins/resource-gate.sh"
             '''
           }
         }

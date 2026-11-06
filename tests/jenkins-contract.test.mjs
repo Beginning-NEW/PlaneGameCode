@@ -65,6 +65,16 @@ test('same-host executor and resource stop gates match the operations budget', (
   assert.match(gate, /minimum_disk_kib=36700160/);
   assert.match(gate, /memory_max.*402653184/);
   assert.match(gate, /cpu_period \* 25/);
+  const preGate = localDeploy.indexOf('bash ops/jenkins/resource-gate.sh');
+  const promoter = localDeploy.indexOf('bash "$stage/deploy/promote.sh"');
+  assert.ok(preGate >= 0 && preGate < promoter);
+  assert.match(pipeline, /"ops\/jenkins\/resource-gate[.]sh"/);
+  assert.match(localDeploy, /"\$post_cd_resource_gate"/);
+  const health = promote.indexOf('curl -fsS --max-time 5 "http://127.0.0.1:$port/healthz"');
+  const postGate = promote.indexOf('bash "$post_cd_resource_gate"');
+  const commitOrder = promote.indexOf('> "$PLANE_GAME_RUNTIME_DIR/last_run_number"');
+  const releaseTrap = promote.lastIndexOf('trap - EXIT');
+  assert.ok(health >= 0 && health < postGate && postGate < commitOrder && commitOrder < releaseTrap);
   assert.match(docs, /p5 `MemAvailable >= 3[.]5 GiB`/);
   assert.match(docs, /p95 CPU busy.*2/);
   assert.match(docs, /`MemAvailable < 2 GiB`.*5 分钟/);
@@ -77,6 +87,17 @@ test('Actions gives PR checks no CD secret path and main is the only image publi
   const publish = checks.split(/^  publish:$/m)[1] ?? '';
   assert.match(checks, /^permissions:\s+contents: read/m);
   assert.match(publish, /packages: write/);
+  assert.match(
+    publish,
+    /actions\/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4[.]4[.]0/,
+  );
+  assert.match(
+    publish,
+    /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4[.]6[.]2/,
+  );
+  for (const action of publish.matchAll(/^\s*- uses: ([^\s#]+)/gm)) {
+    assert.match(action[1], /^[^@]+@[0-9a-f]{40}$/);
+  }
   assert.doesNotMatch(checks, /DEPLOY_SSH|DEPLOY_HOST|GHCR_READ_TOKEN/);
   assert.match(docs, /plane-github-scm-read/);
   assert.match(docs, /plane-github-actions-read/);

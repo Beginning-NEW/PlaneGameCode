@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-[[ $# -eq 8 ]] || { echo 'Usage: deploy-local.sh SHA REPOSITORY DIGEST PORT ACTIONS_RUN_ID RUN_NUMBER RUN_ATTEMPT GATEWAY_IMAGE' >&2; exit 1; }
+[[ $# -eq 9 ]] || { echo 'Usage: deploy-local.sh SHA REPOSITORY DIGEST PORT ACTIONS_RUN_ID RUN_NUMBER RUN_ATTEMPT GATEWAY_IMAGE POST_CD_RESOURCE_GATE' >&2; exit 1; }
 sha=$1
 repository=$2
 digest=$3
@@ -10,6 +10,7 @@ run_id=$5
 run_number=$6
 run_attempt=$7
 gateway_image=$8
+post_cd_resource_gate=$9
 
 [[ "$sha" =~ ^[0-9a-f]{40}$ && "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
 [[ "$repository" == ghcr.io/beginning-new/planegamecode ]] || { echo 'Unexpected GHCR repository' >&2; exit 1; }
@@ -18,6 +19,7 @@ gateway_image=$8
 [[ "$run_number" =~ ^[1-9][0-9]*$ && ${#run_number} -le 15 ]] || exit 1
 [[ "$run_attempt" =~ ^[1-9][0-9]*$ && ${#run_attempt} -le 10 ]] || exit 1
 [[ "$gateway_image" =~ ^nginxinc/nginx-unprivileged@sha256:[0-9a-f]{64}$ ]] || exit 1
+[[ "$post_cd_resource_gate" == ops/jenkins/resource-gate.sh ]] || { echo 'Unexpected post-CD resource gate' >&2; exit 1; }
 [[ -n "${GHCR_USER:-}" && -n "${GHCR_TOKEN:-}" ]] || { echo 'Sustainable GHCR pull credential is required' >&2; exit 1; }
 [[ -n "${GH_API_TOKEN:-}" ]] || { echo 'GitHub Actions read credential is required' >&2; exit 1; }
 [[ "$(id -un)" == plane-preflight && "$(id -u)" -ne 0 ]] || exit 1
@@ -37,8 +39,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-git archive --format=tar "$sha" compose.yaml deploy | tar -xf - -C "$stage_tmp"
-[[ -f "$stage_tmp/compose.yaml" && -f "$stage_tmp/deploy/promote.sh" ]] || exit 1
+git archive --format=tar "$sha" compose.yaml deploy "$post_cd_resource_gate" | tar -xf - -C "$stage_tmp"
+[[ -f "$stage_tmp/compose.yaml" && -f "$stage_tmp/deploy/promote.sh" &&
+   -f "$stage_tmp/$post_cd_resource_gate" && ! -L "$stage_tmp/$post_cd_resource_gate" ]] || exit 1
 mv "$stage_tmp" "$stage"
 
 export DOCKER_CONFIG="$docker_config"
@@ -52,6 +55,7 @@ bash ops/jenkins/pre-promote-check.sh \
   "$sha" "$run_id" "$run_attempt" "$digest" "$gateway_image" "$run_number"
 
 cd "$root"
-bash "$stage/deploy/promote.sh" "$sha" "$repository" "$digest" "$port" "$run_number" "$run_attempt" "$gateway_image"
-printf 'deployment verified: sha=%s digest=%s gateway=%s actions_run=%s port=%s health=passed\n' \
+bash "$stage/deploy/promote.sh" "$sha" "$repository" "$digest" "$port" "$run_number" "$run_attempt" "$gateway_image" \
+  "$post_cd_resource_gate"
+printf 'deployment verified: sha=%s digest=%s gateway=%s actions_run=%s port=%s health=passed resource_gate=pre_and_post_passed\n' \
   "$sha" "$digest" "$gateway_image" "$run_number/$run_attempt" "$port"

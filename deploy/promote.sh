@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run from a checksum-verified git archive in the dedicated deploy user's home.
 set -euo pipefail
-[[ $# -eq 7 ]] || { echo 'Usage: promote.sh SHA REPOSITORY DIGEST PORT RUN_NUMBER RUN_ATTEMPT GATEWAY_IMAGE' >&2; exit 1; }
-sha="$1"; repo="$2"; digest="$3"; port="$4"; run="$5"; attempt="$6"; gateway_image="$7"
+[[ $# -eq 8 ]] || { echo 'Usage: promote.sh SHA REPOSITORY DIGEST PORT RUN_NUMBER RUN_ATTEMPT GATEWAY_IMAGE POST_CD_RESOURCE_GATE' >&2; exit 1; }
+sha="$1"; repo="$2"; digest="$3"; port="$4"; run="$5"; attempt="$6"; gateway_image="$7"; post_cd_resource_gate_ref="$8"
 [[ "$sha" =~ ^[0-9a-f]{40}$ && "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
 [[ "$repo" =~ ^[a-zA-Z0-9][a-zA-Z0-9./_-]*$ && "$port" =~ ^[0-9]{4,5}$ ]] || exit 1
 [[ "$run" =~ ^[1-9][0-9]*$ && ${#run} -le 15 ]] || exit 1
@@ -15,6 +15,12 @@ root="$HOME/plane-game"
 stage="$root/incoming/$sha-$run-$attempt"
 [[ "$PWD" == "$root" && -f "$stage/compose.yaml" && -f "$stage/deploy/deploy.sh" ]] || exit 1
 [[ -z "$(find "$stage" -type l -print -quit)" ]] || { echo 'Source archive contains a symlink' >&2; exit 1; }
+[[ "$post_cd_resource_gate_ref" == ops/jenkins/resource-gate.sh ]] || {
+  echo 'Post-CD resource gate is not the candidate-owned reviewed script' >&2
+  exit 1
+}
+post_cd_resource_gate="$stage/$post_cd_resource_gate_ref"
+[[ -f "$post_cd_resource_gate" && ! -L "$post_cd_resource_gate" ]] || exit 1
 "$stage/deploy/plane-preflight"
 export PLANE_GAME_RUNTIME_DIR="$root/runtime"
 mkdir -p "$PLANE_GAME_RUNTIME_DIR" "$root/deploy"
@@ -121,6 +127,7 @@ bash "$root/deploy/deploy.sh" "$sha" "$repo" "$digest" "$port" "$gateway_image"
 curl -fsS --max-time 5 "http://127.0.0.1:$port/healthz" >/dev/null
 expected_version=$(printf '{"sha":"%s"}' "$sha")
 [[ "$(curl -fsS --max-time 5 "http://127.0.0.1:$port/version.json")" == "$expected_version" ]]
+bash "$post_cd_resource_gate"
 order_attempt_updated=true
 printf '%s\n' "$attempt" > "$PLANE_GAME_RUNTIME_DIR/last_run_attempt"
 printf '%s\n' "$run" > "$PLANE_GAME_RUNTIME_DIR/last_run_number"
