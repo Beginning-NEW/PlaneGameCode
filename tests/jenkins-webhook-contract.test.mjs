@@ -4,46 +4,64 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-const [jobDsl, jcasc, docs, verify, pipeline] = await Promise.all([
+const [jobDsl, docs, verify, pipeline, admission, gateway, service] = await Promise.all([
   readFile(new URL('../ops/jenkins/config/plane-game-job.groovy', import.meta.url), 'utf8'),
-  readFile(new URL('../ops/jenkins/config/generic-webhook-trigger.yaml', import.meta.url), 'utf8'),
   readFile(new URL('../RUNBOOK.md', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/verify-candidate.sh', import.meta.url), 'utf8'),
   readFile(new URL('../Jenkinsfile', import.meta.url), 'utf8'),
+  readFile(new URL('../ops/jenkins/webhook-admission.mjs', import.meta.url), 'utf8'),
+  readFile(new URL('../ops/jenkins/webhook-gateway.mjs', import.meta.url), 'utf8'),
+  readFile(new URL('../ops/jenkins/config/plane-game-webhook-gateway.service', import.meta.url), 'utf8'),
 ]);
 
-test('webhook configuration validates HMAC and filters the exact trusted workflow_run', () => {
+test('webhook admission validates HMAC and persists atomic delivery and run uniqueness before enqueue', () => {
   for (const value of [
-    'X-Hub-Signature-256',
-    'plane-github-webhook-secret',
-    'HmacSHA256',
-  ]) assert.ok(jcasc.includes(value));
-  assert.match(jcasc, /hmacEnabled:\s+true/);
-  assert.doesNotMatch(jcasc, /secret(Text|Value)?:/i);
-
-  for (const value of [
-    "key('X-GitHub-Event')",
-    "value('$.workflow_run.head_sha')",
-    "value('$.workflow_run.id')",
-    "value('$.workflow_run.run_attempt')",
-    "value('$.workflow_run.head_repository.full_name')",
-    "value('$.repository.full_name')",
     'workflow_run',
     'completed',
     'Beginning-NEW/PlaneGameCode',
     'Checks',
-    'checks[.]yml',
-    'printContributedVariables(false)',
-    'printPostContent(false)',
+    '.github/workflows/checks.yml',
+    'verifySignature(rawBody, signature, secret)',
+    'BEGIN IMMEDIATE',
+    'PRIMARY KEY',
+    'UNIQUE (run_id, run_attempt)',
+    "state IN ('dispatching', 'submitted', 'queued', 'running', 'completed', 'failed')".replace(/ /g, ''),
+    'markSubmitted(deliveryId)',
+    'recordReconciliation(deliveryId, observation, { incrementAttempt = true } = {})',
+    'reconcile_count',
+    'recordReconciliationError(deliveryId, errorCode)',
+  ]) assert.ok(admission.replace(/\s/g, '').includes(value.replace(/\s/g, '')), `missing admission control: ${value}`);
+  for (const value of [
+    'x-hub-signature-256',
+    'x-github-delivery',
+    '/github/workflow-run',
+    'WEBHOOK_DELIVERY',
+    '/buildWithParameters',
+    'reconcile(record)',
+    'normalizeQueueIdentity(location)',
+    'hasCandidateIdentity(actions, record)',
+    'uniqueMatch(items, predicate, multipleCode)',
+  ]) assert.ok(gateway.includes(value), `missing gateway control: ${value}`);
+  for (const value of [
+    'StateDirectory=plane-game-webhook',
+    'LoadCredential=webhook-secret:',
+    'LoadCredential=jenkins-api-token:',
+    '/usr/bin/flock --no-fork --nonblock',
+    'ProtectSystem=strict',
+  ]) assert.ok(service.includes(value), `missing service control: ${value}`);
+  for (const value of [
+    "stringParam('WEBHOOK_DELIVERY'",
     'disabled(true)',
   ]) assert.ok(jobDsl.includes(value), `missing webhook contract value: ${value}`);
+  assert.doesNotMatch(jobDsl, /genericTrigger|triggers\s*\{/);
+  assert.ok(pipeline.includes('params.WEBHOOK_DELIVERY ==~ /(?i)[0-9a-f]{8}'));
 });
 
-test('offline webhook dry-run accepts one trusted fixture and rejects mismatches without logging secrets', () => {
+test('offline webhook dry-run queues once and rejects without logging secrets', () => {
   const script = fileURLToPath(new URL('../ops/jenkins/webhook-contract-dry-run.mjs', import.meta.url));
   const result = spawnSync(process.execPath, [script], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /accepted=1 rejected=5 hmac=verified payload_logged=0 secret_logged=0/);
+  assert.match(result.stdout, /queued=1 duplicate=1 rejected=2 hmac=verified payload_logged=0 secret_logged=0/);
 });
 
 test('ordering and credential documentation preserve the reviewed safety boundary', () => {
@@ -62,6 +80,11 @@ test('ordering and credential documentation preserve the reviewed safety boundar
     'GITHUB_TOKEN',
     '[YOU-47](/YOU/issues/YOU-47)',
     'cannot replace that admission gate',
+    'delivery_id',
+    'run_id, run_attempt',
+    'reservation',
+    'queued',
+    'failed',
   ]) assert.ok(docs.includes(value), `missing RUNBOOK boundary: ${value}`);
   assert.match(docs, /单调递增的 Actions `run_number`/);
   assert.match(docs, /`run_id` 只用于唯一标识 run/);

@@ -1,5 +1,25 @@
 import { readFile, writeFile } from 'node:fs/promises';
-const files = ['index.html', 'src/main.js', 'src/game.js', 'src/words.js', 'src/style.css', 'tests/game.test.mjs', 'tests/e2e/game.spec.mjs', 'playwright.config.mjs', 'tools/build.mjs', 'tools/serve.mjs', 'tools/lint.mjs', 'tools/format.mjs'];
+const files = [
+  'index.html',
+  'src/main.js',
+  'src/game.js',
+  'src/words.js',
+  'src/style.css',
+  'tests/game.test.mjs',
+  'tests/jenkins-loopback-contract.test.mjs',
+  'tests/jenkins-webhook-admission.test.mjs',
+  'tests/jenkins-webhook-gateway.test.mjs',
+  'tests/e2e/game.spec.mjs',
+  'playwright.config.mjs',
+  'ops/jenkins/webhook-admission.mjs',
+  'ops/jenkins/webhook-gateway.mjs',
+  'ops/jenkins/webhook-contract-dry-run.mjs',
+  'ops/jenkins/check-loopback-contract.mjs',
+  'tools/build.mjs',
+  'tools/serve.mjs',
+  'tools/lint.mjs',
+  'tools/format.mjs',
+];
 let dirty = false;
 for (const file of files) {
   const body = await readFile(file, 'utf8');
