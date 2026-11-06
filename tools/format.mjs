@@ -7,6 +7,7 @@ const files = [
   'src/style.css',
   'tests/game.test.mjs',
   'tests/jenkins-webhook-admission.test.mjs',
+  'tests/jenkins-webhook-gateway.test.mjs',
   'tests/e2e/game.spec.mjs',
   'playwright.config.mjs',
   'ops/jenkins/webhook-admission.mjs',

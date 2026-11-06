@@ -35,10 +35,10 @@ const admission = new WebhookAdmission({
   enqueuer: {
     async enqueue() {
       queued += 1;
-      return { queueUrl: '/queue/item/1/' };
+      return { queueId: '1', queueUrl: 'http://jenkins.test/queue/item/1/' };
     },
     async reconcile() {
-      return null;
+      return { state: 'queued', queueId: '1', queueUrl: 'http://jenkins.test/queue/item/1/' };
     },
   },
 });

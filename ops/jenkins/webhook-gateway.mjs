@@ -29,7 +29,12 @@ function hasDelivery(actions, deliveryId) {
 
 export class JenkinsEnqueuer {
   constructor({ baseUrl, user, tokenProvider, fetchImpl = fetch }) {
-    this.baseUrl = baseUrl.replace(/\/$/, '');
+    const parsed = new URL(baseUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password ||
+        parsed.search || parsed.hash || !['', '/'].includes(parsed.pathname)) {
+      throw new Error('JENKINS_URL must be an HTTP(S) origin without credentials or a path');
+    }
+    this.baseUrl = parsed.origin;
     this.user = user;
     this.tokenProvider = tokenProvider;
     this.fetchImpl = fetchImpl;
@@ -50,24 +55,99 @@ export class JenkinsEnqueuer {
     return result;
   }
 
-  async reconcile(deliveryId) {
+  normalizeQueueIdentity(location) {
+    let parsed;
+    try {
+      parsed = new URL(location, `${this.baseUrl}/`);
+    } catch {
+      throw Object.assign(new Error('invalid Jenkins queue location'), { code: 'invalid_queue_location' });
+    }
+    const match = /^\/queue\/item\/([1-9][0-9]*)\/?$/.exec(parsed.pathname);
+    if (parsed.origin !== this.baseUrl || parsed.username || parsed.password ||
+        parsed.search || parsed.hash || !match) {
+      throw Object.assign(new Error('invalid Jenkins queue location'), { code: 'invalid_queue_location' });
+    }
+    return { queueId: match[1], queueUrl: `${this.baseUrl}/queue/item/${match[1]}/` };
+  }
+
+  normalizeBuildIdentity(number, location) {
+    const buildNumber = String(number ?? '');
+    if (!/^[1-9][0-9]*$/.test(buildNumber)) {
+      throw Object.assign(new Error('invalid Jenkins build identity'), { code: 'reconcile_failed' });
+    }
+    const expected = `${JOB_PATH}/${buildNumber}/`;
+    const parsed = new URL(location ?? expected, `${this.baseUrl}/`);
+    if (parsed.origin !== this.baseUrl || parsed.pathname !== expected ||
+        parsed.search || parsed.hash || parsed.username || parsed.password) {
+      throw Object.assign(new Error('invalid Jenkins build identity'), { code: 'reconcile_failed' });
+    }
+    return { buildNumber, buildUrl: `${this.baseUrl}${expected}` };
+  }
+
+  isExpectedJobUrl(value) {
+    try {
+      const parsed = new URL(value, `${this.baseUrl}/`);
+      return parsed.origin === this.baseUrl && parsed.pathname === `${JOB_PATH}/` &&
+        !parsed.search && !parsed.hash && !parsed.username && !parsed.password;
+    } catch {
+      return false;
+    }
+  }
+
+  buildObservation(build, queue = {}) {
+    const identity = this.normalizeBuildIdentity(build?.number, build?.url);
+    return {
+      ...queue,
+      ...identity,
+      state: build?.building || build?.result == null ? 'running' : 'completed',
+      buildResult: build?.result ?? null,
+    };
+  }
+
+  async reconcile(record) {
+    const deliveryId = record.delivery_id;
+    if (record.queue_id) {
+      const itemResponse = await this.request(
+        `/queue/item/${record.queue_id}/api/json?tree=id,url,cancelled,task[url],executable[number,url],actions[parameters[name,value]]]`,
+      );
+      if (itemResponse.ok) {
+        const item = await itemResponse.json();
+        if (!this.isExpectedJobUrl(item?.task?.url) || !hasDelivery(item?.actions, deliveryId)) {
+          throw Object.assign(new Error('queue identity mismatch'), { code: 'reconcile_failed' });
+        }
+        const queue = this.normalizeQueueIdentity(item.url ?? record.queue_url);
+        if (item.cancelled) return { ...queue, state: 'completed', buildResult: 'CANCELLED' };
+        if (item.executable) return this.buildObservation(item.executable, queue);
+        return { ...queue, state: 'queued' };
+      }
+      if (itemResponse.status !== 404) {
+        throw Object.assign(new Error('queue item reconciliation failed'), { code: 'reconcile_failed' });
+      }
+    }
+
     const queue = await this.request(
       '/queue/api/json?tree=items[id,url,task[url],actions[parameters[name,value]]]',
     );
     if (!queue.ok) throw Object.assign(new Error('queue reconciliation failed'), { code: 'reconcile_failed' });
     const queuePayload = await queue.json();
     const queued = (queuePayload.items ?? []).find(
-      (item) => item?.task?.url?.includes(`${JOB_PATH}/`) && hasDelivery(item.actions, deliveryId),
+      (item) => this.isExpectedJobUrl(item?.task?.url) && hasDelivery(item.actions, deliveryId),
     );
-    if (queued) return { queueUrl: queued.url ?? `${this.baseUrl}/queue/item/${queued.id}/` };
+    if (queued) {
+      const identity = this.normalizeQueueIdentity(queued.url ?? `/queue/item/${queued.id}/`);
+      return { ...identity, state: 'queued' };
+    }
 
     const builds = await this.request(
-      `${JOB_PATH}/api/json?tree=builds[number,url,actions[parameters[name,value]]]`,
+      `${JOB_PATH}/api/json?tree=builds[number,url,building,result,actions[parameters[name,value]]]`,
     );
     if (!builds.ok) throw Object.assign(new Error('build reconciliation failed'), { code: 'reconcile_failed' });
     const buildPayload = await builds.json();
     const build = (buildPayload.builds ?? []).find((item) => hasDelivery(item.actions, deliveryId));
-    return build ? { queueUrl: build.url } : null;
+    return build ? this.buildObservation(build, {
+      queueId: record.queue_id ?? null,
+      queueUrl: record.queue_id ? record.queue_url : null,
+    }) : null;
   }
 
   async enqueue(candidate) {
@@ -78,11 +158,11 @@ export class JenkinsEnqueuer {
       WEBHOOK_DELIVERY: candidate.deliveryId,
     });
     const result = await this.request(`${JOB_PATH}/buildWithParameters?${query}`, { method: 'POST' });
-    const queueUrl = result.headers.get('location');
-    if (result.status !== 201 || !queueUrl) {
+    const location = result.headers.get('location');
+    if (result.status !== 201 || !location) {
       throw Object.assign(new Error('Jenkins did not confirm queue creation'), { code: 'jenkins_rejected' });
     }
-    return { queueUrl };
+    return this.normalizeQueueIdentity(location);
   }
 }
 

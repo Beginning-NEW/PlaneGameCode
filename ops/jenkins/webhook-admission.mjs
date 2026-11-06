@@ -65,27 +65,70 @@ export class DeliveryStore {
     this.now = now;
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;');
+    const columns = this.db.prepare(`PRAGMA table_info('webhook_deliveries')`).all();
+    if (columns.length > 0 && !columns.some((column) => column.name === 'queue_id')) {
+      this.migrateLegacySchema();
+    }
+    this.createSchema();
+    this.db.prepare(`
+      UPDATE webhook_deliveries
+      SET state = 'failed', retryable = 1, error_code = 'gateway_restart_before_submit', updated_at = ?
+      WHERE state = 'dispatching'
+    `).run(this.now());
+  }
+
+  createSchema() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS webhook_deliveries (
         delivery_id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL,
         run_attempt TEXT NOT NULL,
         candidate_sha TEXT NOT NULL,
-        state TEXT NOT NULL CHECK (state IN ('dispatching', 'queued', 'failed')),
+        state TEXT NOT NULL CHECK (
+          state IN ('dispatching', 'submitted', 'queued', 'running', 'completed', 'failed')
+        ),
         retry_count INTEGER NOT NULL DEFAULT 0,
         retryable INTEGER NOT NULL DEFAULT 1 CHECK (retryable IN (0, 1)),
+        queue_id TEXT,
         queue_url TEXT,
+        build_number TEXT,
+        build_url TEXT,
+        build_result TEXT,
+        submitted_at TEXT,
+        last_reconciled_at TEXT,
         error_code TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE (run_id, run_attempt)
       ) STRICT;
     `);
-    this.db.prepare(`
-      UPDATE webhook_deliveries
-      SET state = 'failed', retryable = 1, error_code = 'gateway_restart_uncertain', updated_at = ?
-      WHERE state = 'dispatching'
-    `).run(this.now());
+  }
+
+  migrateLegacySchema() {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.exec('ALTER TABLE webhook_deliveries RENAME TO webhook_deliveries_legacy');
+      this.createSchema();
+      this.db.exec(`
+        INSERT INTO webhook_deliveries (
+          delivery_id, run_id, run_attempt, candidate_sha, state, retry_count, retryable,
+          queue_url, submitted_at, error_code, created_at, updated_at
+        )
+        SELECT
+          delivery_id, run_id, run_attempt, candidate_sha,
+          CASE WHEN state = 'queued' THEN 'queued' ELSE 'submitted' END,
+          retry_count, 0, queue_url,
+          CASE WHEN state = 'queued' THEN NULL ELSE updated_at END,
+          CASE WHEN state = 'queued' THEN error_code ELSE 'legacy_outcome_unknown' END,
+          created_at, updated_at
+        FROM webhook_deliveries_legacy;
+        DROP TABLE webhook_deliveries_legacy;
+      `);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   reserve(deliveryId, candidate) {
@@ -102,9 +145,13 @@ export class DeliveryStore {
           this.db.exec('COMMIT');
           return { action: 'reject', code: 'delivery_collision' };
         }
-        if (existingDelivery.state === 'queued') {
+        if (existingDelivery.state === 'completed') {
           this.db.exec('COMMIT');
-          return { action: 'duplicate', code: 'already_queued', record: existingDelivery };
+          return { action: 'duplicate', code: 'already_completed', record: existingDelivery };
+        }
+        if (['submitted', 'queued', 'running'].includes(existingDelivery.state)) {
+          this.db.exec('COMMIT');
+          return { action: 'reconcile', record: existingDelivery };
         }
         if (existingDelivery.state === 'dispatching' || !existingDelivery.retryable) {
           this.db.exec('COMMIT');
@@ -153,12 +200,60 @@ export class DeliveryStore {
     }
   }
 
-  markQueued(deliveryId, queueUrl) {
+  markSubmitted(deliveryId) {
+    const timestamp = this.now();
     const result = this.db.prepare(`
       UPDATE webhook_deliveries
-      SET state = 'queued', retryable = 0, queue_url = ?, error_code = NULL, updated_at = ?
+      SET state = 'submitted', retryable = 0, submitted_at = ?, error_code = NULL, updated_at = ?
       WHERE delivery_id = ? AND state = 'dispatching'
-    `).run(queueUrl, this.now(), deliveryId);
+    `).run(timestamp, timestamp, deliveryId);
+    if (result.changes !== 1) throw Object.assign(new Error('state transition failed'), { code: 'state_write_failed' });
+  }
+
+  markQueued(deliveryId, queue) {
+    return this.recordReconciliation(deliveryId, { ...queue, state: 'queued' });
+  }
+
+  recordReconciliation(deliveryId, observation) {
+    const ranks = { submitted: 0, queued: 1, running: 2, completed: 3 };
+    if (!Object.hasOwn(ranks, observation?.state)) {
+      throw Object.assign(new Error('invalid reconciliation state'), { code: 'state_write_failed' });
+    }
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const existing = this.get(deliveryId);
+      if (!existing || !Object.hasOwn(ranks, existing.state)) {
+        throw Object.assign(new Error('state transition failed'), { code: 'state_write_failed' });
+      }
+      const state = ranks[observation.state] > ranks[existing.state] ? observation.state : existing.state;
+      const timestamp = this.now();
+      this.db.prepare(`
+        UPDATE webhook_deliveries
+        SET state = ?, retryable = 0,
+            queue_id = COALESCE(?, queue_id), queue_url = COALESCE(?, queue_url),
+            build_number = COALESCE(?, build_number), build_url = COALESCE(?, build_url),
+            build_result = COALESCE(?, build_result), last_reconciled_at = ?,
+            error_code = NULL, updated_at = ?
+        WHERE delivery_id = ?
+      `).run(
+        state, observation.queueId ?? null, observation.queueUrl ?? null,
+        observation.buildNumber ?? null, observation.buildUrl ?? null,
+        observation.buildResult ?? null, timestamp, timestamp, deliveryId,
+      );
+      this.db.exec('COMMIT');
+      return this.get(deliveryId);
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  markSubmissionError(deliveryId, errorCode) {
+    const result = this.db.prepare(`
+      UPDATE webhook_deliveries
+      SET error_code = ?, updated_at = ?
+      WHERE delivery_id = ? AND state = 'submitted'
+    `).run(errorCode, this.now(), deliveryId);
     if (result.changes !== 1) throw Object.assign(new Error('state transition failed'), { code: 'state_write_failed' });
   }
 
@@ -234,32 +329,52 @@ export class WebhookAdmission {
       return response(202, reservation.code);
     }
 
-    let enqueueConfirmed = false;
-    try {
-      if (reservation.action === 'retry') {
-        const reconciled = await this.enqueuer.reconcile(deliveryId);
-        if (reconciled) {
-          this.store.markQueued(deliveryId, reconciled.queueUrl);
-          this.logger({ outcome: 'reconciled', code: 'already_queued' });
-          return response(202, 'already_queued');
-        }
-      }
-      const queued = await this.enqueuer.enqueue({ deliveryId, ...candidate });
-      enqueueConfirmed = true;
-      this.store.markQueued(deliveryId, queued.queueUrl);
-      this.logger({ outcome: 'queued', code: 'queued' });
-      return response(202, 'queued');
-    } catch (error) {
-      const errorCode = safeErrorCode(error);
+    if (reservation.action === 'reconcile') {
       try {
-        this.store.markFailed(deliveryId, errorCode);
+        const reconciled = await this.enqueuer.reconcile(reservation.record);
+        if (!reconciled) {
+          const code = reservation.record.state === 'submitted' ? 'submitted_unknown' : 'queue_state_unknown';
+          this.logger({ outcome: 'pending', code });
+          return response(202, code);
+        }
+        const record = this.store.recordReconciliation(deliveryId, reconciled);
+        const code = record.state === 'queued' ? 'already_queued' : record.state;
+        this.logger({ outcome: 'reconciled', code });
+        return response(202, code);
       } catch {
-        this.logger({ outcome: 'failed', code: 'state_write_failed' });
-        return response(503, 'state_write_failed');
+        this.logger({ outcome: 'failed', code: 'reconcile_failed' });
+        return response(503, 'reconcile_failed');
       }
-      const responseCode = enqueueConfirmed ? 'state_write_failed' : 'enqueue_failed';
-      this.logger({ outcome: 'failed', code: responseCode });
-      return response(503, responseCode);
     }
+
+    try {
+      this.store.markSubmitted(deliveryId);
+    } catch {
+      try {
+        this.store.markFailed(deliveryId, 'submission_state_write_failed');
+      } catch {}
+      this.logger({ outcome: 'failed', code: 'state_write_failed' });
+      return response(503, 'state_write_failed');
+    }
+
+    let queued;
+    try {
+      queued = await this.enqueuer.enqueue({ deliveryId, ...candidate });
+    } catch (error) {
+      try {
+        this.store.markSubmissionError(deliveryId, safeErrorCode(error));
+      } catch {}
+      this.logger({ outcome: 'pending', code: 'enqueue_outcome_unknown' });
+      return response(503, 'enqueue_outcome_unknown');
+    }
+
+    try {
+      this.store.markQueued(deliveryId, queued);
+    } catch {
+      this.logger({ outcome: 'failed', code: 'state_write_failed' });
+      return response(503, 'state_write_failed');
+    }
+    this.logger({ outcome: 'queued', code: 'queued' });
+    return response(202, 'queued');
   }
 }

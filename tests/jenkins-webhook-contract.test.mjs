@@ -25,15 +25,18 @@ test('webhook admission validates HMAC and persists atomic delivery and run uniq
     'BEGIN IMMEDIATE',
     'PRIMARY KEY',
     'UNIQUE (run_id, run_attempt)',
-    "state IN ('dispatching', 'queued', 'failed')",
-  ]) assert.ok(admission.includes(value), `missing admission control: ${value}`);
+    "state IN ('dispatching', 'submitted', 'queued', 'running', 'completed', 'failed')".replace(/ /g, ''),
+    'markSubmitted(deliveryId)',
+    'recordReconciliation(deliveryId, observation)',
+  ]) assert.ok(admission.replace(/\s/g, '').includes(value.replace(/\s/g, '')), `missing admission control: ${value}`);
   for (const value of [
     'x-hub-signature-256',
     'x-github-delivery',
     '/github/workflow-run',
     'WEBHOOK_DELIVERY',
     '/buildWithParameters',
-    'reconcile(deliveryId)',
+    'reconcile(record)',
+    'normalizeQueueIdentity(location)',
   ]) assert.ok(gateway.includes(value), `missing gateway control: ${value}`);
   for (const value of [
     'StateDirectory=plane-game-webhook',
