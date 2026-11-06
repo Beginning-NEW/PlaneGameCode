@@ -11,6 +11,7 @@ pipeline {
     string(name: 'CANDIDATE_SHA', defaultValue: '', description: 'workflow_run.head_sha')
     string(name: 'ACTIONS_RUN_ID', defaultValue: '', description: 'Completed Checks run id')
     string(name: 'ACTIONS_RUN_ATTEMPT', defaultValue: '', description: 'Completed Checks run attempt')
+    string(name: 'WEBHOOK_DELIVERY', defaultValue: '', description: 'Validated X-GitHub-Delivery UUID')
   }
   environment {
     GITHUB_REPOSITORY = 'Beginning-NEW/PlaneGameCode'
@@ -26,7 +27,8 @@ pipeline {
           }
           if (!(params.CANDIDATE_SHA ==~ /[0-9a-f]{40}/) ||
               !(params.ACTIONS_RUN_ID ==~ /[1-9][0-9]*/) ||
-              !(params.ACTIONS_RUN_ATTEMPT ==~ /[1-9][0-9]*/)) {
+              !(params.ACTIONS_RUN_ATTEMPT ==~ /[1-9][0-9]*/) ||
+              !(params.WEBHOOK_DELIVERY ==~ /(?i)[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/)) {
             error('Invalid workflow_run metadata')
           }
         }
@@ -82,7 +84,7 @@ pipeline {
   }
   post {
     always {
-      echo "result=${currentBuild.currentResult} sha=${params.CANDIDATE_SHA} actions_run=${params.ACTIONS_RUN_ID}"
+      echo "result=${currentBuild.currentResult} sha=${params.CANDIDATE_SHA} actions_run=${params.ACTIONS_RUN_ID} delivery=${params.WEBHOOK_DELIVERY}"
     }
   }
 }
