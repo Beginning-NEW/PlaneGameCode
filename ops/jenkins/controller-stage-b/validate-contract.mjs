@@ -39,6 +39,8 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   }
   requireMatch(casc, /numExecutors: 0/, 'controller must have zero executors');
   requireMatch(casc, /slaveAgentPort: -1/, 'inbound agent port must be disabled');
+  requireMatch(casc, /crumbIssuer:\s*standard: \{\}/, 'default CSRF crumb issuer is missing');
+  forbid(casc, /excludeClientIPFromCrumb/, 'removed Jenkins crumb IP option is unsupported');
   requireMatch(casc, /name: "plane-admin"[\s\S]*"Overall\/Administer"/, 'fixed admin grant is missing');
   requireMatch(casc, /name: "authenticated"[\s\S]*"Overall\/Read"/, 'authenticated read grant is missing');
   requireMatch(casc, /name: "plane-game-cd-rootless"/, 'bounded agent name missing');
