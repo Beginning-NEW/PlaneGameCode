@@ -17,6 +17,8 @@ One changed candidate has a fixed 16-call graph:
 
 The shared ledger reserves the remaining 15 calls after discovery. It permits at most 30 actual plus reserved calls and one candidate in a strict rolling hour. Candidate validation starts only when GitHub reports at least 46 remaining, preserving a 30-request external reserve. There is no in-attempt retry or pagination expansion.
 
+The user service has a four-minute start timeout, 256 MiB memory ceiling, 25% CPU quota, and 64-task ceiling. Its journal output is rate-limited to 30 messages per minute. A timeout or resource-limit failure leaves the persisted ledger for the next run's fail-closed recovery; operators must investigate the service result before admitting another release.
+
 For this test repository only, `Beginning-NEW` / `183624934` is the reviewed `production` approver even when it is also the run actor. The approval `submitted_at` must fall inside the exact attempt's `run_started_at` through `updated_at` window. An approval from attempt 1 cannot authorize attempt 2. This is a test-only governance limitation, not independent GitHub approval; production reuse must restore a distinct non-self approver.
 
 ## Durable identities and recovery

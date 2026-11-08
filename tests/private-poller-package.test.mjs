@@ -34,9 +34,9 @@ test('poller package is disabled, five-minute bounded, and mutually exclusive wi
   assert.equal(manifest.poller.candidateCeilingPerRollingHour, 1);
   assert.equal(manifest.poller.candidateGraphRequests, 16);
   assert.deepEqual(manifest.poller.limits, {
-    memoryMax: '192M', cpuQuota: '25%', tasksMax: 32,
-    timeoutStartSec: '240s',
-    logRateLimitIntervalSec: '60s', logRateLimitBurst: 50,
+    memoryMax: '256M', cpuQuota: '25%', tasksMax: 64,
+    timeoutStartSec: '4min',
+    logRateLimitIntervalSec: '1min', logRateLimitBurst: 30,
   });
   assert.deepEqual(manifest.poller.ledgerRetention, {
     compactAtBytes: 4194304, hardMaxBytes: 8388608, archiveCount: 4,
@@ -60,9 +60,9 @@ test('poller package is disabled, five-minute bounded, and mutually exclusive wi
   assert.match(timer, /^\[Install\]\nWantedBy=timers[.]target$/m);
   assert.match(activationDropin, /Environment=CD_TRIGGER_MODE=poller/);
   assert.match(service, /flock --no-fork --nonblock %h\/.local\/state\/plane-game-poller\/\.shared\.lock/);
-  for (const limit of ['MemoryMax=192M', 'CPUQuota=25%', 'TasksMax=32',
-    'TimeoutStartSec=240s', 'LogRateLimitIntervalSec=60s',
-    'LogRateLimitBurst=50']) assert.match(service, new RegExp(limit));
+  for (const limit of ['MemoryMax=256M', 'CPUQuota=25%', 'TasksMax=64',
+    'TimeoutStartSec=4min', 'LogRateLimitIntervalSec=1min',
+    'LogRateLimitBurst=30']) assert.match(service, new RegExp(limit));
   assert.doesNotMatch(service, /RuntimeMaxSec=/);
   assert.match(pipeline, /flock --no-fork --nonblock "\$PLANE_POLLER_STATE_DIR\/\.shared\.lock"/);
   assert.match(localDeploy, /state_call\(\)[\s\S]*flock --no-fork --nonblock "\$state_lock"/);

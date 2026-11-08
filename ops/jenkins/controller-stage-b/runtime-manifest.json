@@ -77,12 +77,12 @@
     "globalPermissions": ["Overall/Read"],
     "jobPermissions": ["Job/Read", "Job/Build"],
     "limits": {
-      "memoryMax": "192M",
+      "memoryMax": "256M",
       "cpuQuota": "25%",
-      "tasksMax": 32,
-      "timeoutStartSec": "240s",
-      "logRateLimitIntervalSec": "60s",
-      "logRateLimitBurst": 50
+      "tasksMax": 64,
+      "timeoutStartSec": "4min",
+      "logRateLimitIntervalSec": "1min",
+      "logRateLimitBurst": 30
     },
     "ledgerRetention": {
       "compactAtBytes": 4194304,
