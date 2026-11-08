@@ -8,6 +8,7 @@ import {
   readFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
+import { directLoopbackFetch } from './direct-loopback-http.mjs';
 
 const JENKINS_ORIGIN = 'http://127.0.0.1:18080';
 const JOB_PATH = '/job/plane-game/job/main-cd';
@@ -125,7 +126,7 @@ function matchesTrigger(actions, candidate) {
 }
 
 export class JenkinsPollerClient {
-  constructor({ credentialProvider, fetchImpl = fetch }) {
+  constructor({ credentialProvider, fetchImpl = directLoopbackFetch }) {
     this.credentialProvider = credentialProvider;
     this.fetchImpl = fetchImpl;
   }

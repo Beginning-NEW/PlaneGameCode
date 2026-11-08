@@ -11,6 +11,7 @@ WorkingDirectory=%h/plane-game-cd
 RuntimeDirectory=plane-game-webhook
 RuntimeDirectoryMode=0700
 UMask=0077
+UnsetEnvironment=HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy NODE_OPTIONS NODE_USE_ENV_PROXY
 Environment=DOCKER_HOST=unix:///run/user/1003/docker.sock
 Environment=CD_TRIGGER_MODE=disabled
 Environment=WEBHOOK_LISTEN_HOST=127.0.0.1

@@ -1,5 +1,7 @@
 # Jenkins CD operator notes
 
+Every request to the fixed Jenkins and application loopback origins must use the repository direct transport boundary. Node clients use direct HTTP sockets; shell clients disable proxying and redirects explicitly; service units remove inherited proxy and Node proxy-enablement variables before launch.
+
 This directory implements the repository side of the main-only, same-host CD contract. See `RUNBOOK.md` for resource admission, credential ownership, setup, rollback, and evidence requirements.
 
 ## Webhook admission

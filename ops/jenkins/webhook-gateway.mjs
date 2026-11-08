@@ -8,9 +8,11 @@ import {
   JenkinsApiTokenProvider,
   WebhookAdmission,
 } from './webhook-admission.mjs';
+import { directLoopbackFetch } from './lib/direct-loopback-http.mjs';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const JOB_PATH = '/job/plane-game/job/main-cd';
+const JENKINS_ORIGIN = 'http://127.0.0.1:18080';
 
 function required(name) {
   const value = process.env[name];
@@ -47,11 +49,11 @@ function uniqueMatch(items, predicate, multipleCode) {
 }
 
 export class JenkinsEnqueuer {
-  constructor({ baseUrl, user, tokenProvider, fetchImpl = fetch }) {
+  constructor({ baseUrl, user, tokenProvider, fetchImpl = directLoopbackFetch }) {
     const parsed = new URL(baseUrl);
-    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password ||
+    if (parsed.origin !== JENKINS_ORIGIN || parsed.username || parsed.password ||
         parsed.search || parsed.hash || !['', '/'].includes(parsed.pathname)) {
-      throw new Error('JENKINS_URL must be an HTTP(S) origin without credentials or a path');
+      throw new Error('JENKINS_URL must be the fixed loopback Jenkins origin');
     }
     this.baseUrl = parsed.origin;
     this.user = user;

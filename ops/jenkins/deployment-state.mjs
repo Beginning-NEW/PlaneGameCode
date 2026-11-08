@@ -4,6 +4,7 @@ import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { candidatePolicy } from './lib/github-candidate.mjs';
+import { directLoopbackFetch } from './lib/direct-loopback-http.mjs';
 import { SecureLedger } from './lib/secure-ledger.mjs';
 
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -37,7 +38,7 @@ function docker(args) {
   }
 }
 
-async function exactHealth(sha, fetchImpl = fetch) {
+async function exactHealth(sha, fetchImpl = directLoopbackFetch) {
   try {
     const health = await fetchImpl(`${HEALTH_ORIGIN}/healthz`, {
       redirect: 'manual',
@@ -56,7 +57,7 @@ async function exactHealth(sha, fetchImpl = fetch) {
 }
 
 export class DockerRuntimeInspector {
-  constructor(runtimeRoot, { fetchImpl = fetch } = {}) {
+  constructor(runtimeRoot, { fetchImpl = directLoopbackFetch } = {}) {
     this.runtimeRoot = runtimeRoot;
     this.fetchImpl = fetchImpl;
   }

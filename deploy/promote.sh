@@ -11,6 +11,9 @@ sha="$1"; repo="$2"; digest="$3"; port="$4"; run="$5"; attempt="$6"; gateway_ima
 [[ "$gateway_image" =~ ^nginxinc/nginx-unprivileged@sha256:[a-f0-9]{64}$ ]] || exit 1
 [[ $(id -un) == plane-preflight && $(id -u) -ne 0 ]] || { echo 'Refusing deployment outside plane-preflight' >&2; exit 1; }
 export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
+loopback_curl() {
+  curl --proxy '' --noproxy 127.0.0.1 --proto '=http' --max-redirs 0 "$@"
+}
 docker info --format '{{json .SecurityOptions}}' | grep -q rootless || { echo 'Rootless Docker is required' >&2; exit 1; }
 root="$HOME/plane-game"
 poller_mode=false
@@ -179,8 +182,8 @@ failed() {
       PLANE_GAME_RUNTIME_DIR="$PLANE_GAME_RUNTIME_DIR" bash "$root/deploy/rollback.sh" "$old_sha" "$port" ||
         { echo 'ALERT: automatic rollback incomplete' >&2; recovery=incomplete; }
     fi
-    if ! curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null ||
-       [[ "$(curl -fsS "http://127.0.0.1:$port/version.json" 2>/dev/null)" != "{\"sha\":\"$old_sha\"}" ]]; then
+    if ! loopback_curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null ||
+       [[ "$(loopback_curl -fsS "http://127.0.0.1:$port/version.json" 2>/dev/null)" != "{\"sha\":\"$old_sha\"}" ]]; then
       echo 'ALERT: prior healthy route not restored; investigate immediately' >&2
       set_recovery_incomplete
     fi
@@ -215,9 +218,9 @@ while IFS= read -r -d '' source; do
   cmp "$source" "$root/deploy/${source#"$stage/deploy/"}"
 done < <(find "$stage/deploy" -type f -print0)
 bash "$root/deploy/deploy.sh" "$sha" "$repo" "$digest" "$port" "$gateway_image"
-curl -fsS --max-time 5 "http://127.0.0.1:$port/healthz" >/dev/null
+loopback_curl -fsS --max-time 5 "http://127.0.0.1:$port/healthz" >/dev/null
 expected_version=$(printf '{"sha":"%s"}' "$sha")
-[[ "$(curl -fsS --max-time 5 "http://127.0.0.1:$port/version.json")" == "$expected_version" ]]
+[[ "$(loopback_curl -fsS --max-time 5 "http://127.0.0.1:$port/version.json")" == "$expected_version" ]]
 bash "$post_cd_resource_gate"
 order_attempt_updated=true
 printf '%s\n' "$attempt" > "$PLANE_GAME_RUNTIME_DIR/last_run_attempt"

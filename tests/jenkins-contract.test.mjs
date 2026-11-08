@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const [pipeline, verify, resolveDigest, pullHelper, publicImages, gate, preflight, sudoPolicy, localDeploy,
-  promote, docs, checks, jobDsl] = await Promise.all([
+  promote, common, docs, checks, jobDsl] = await Promise.all([
   readFile(new URL('../Jenkinsfile', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/verify-candidate.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/resolve-public-ghcr-digest.sh', import.meta.url), 'utf8'),
@@ -14,6 +14,7 @@ const [pipeline, verify, resolveDigest, pullHelper, publicImages, gate, prefligh
   readFile(new URL('../deploy/preflight_sudo_policy.py', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/deploy-local.sh', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/promote.sh', import.meta.url), 'utf8'),
+  readFile(new URL('../deploy/common.sh', import.meta.url), 'utf8'),
   readFile(new URL('../RUNBOOK.md', import.meta.url), 'utf8'),
   readFile(new URL('../.github/workflows/checks.yml', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/config/plane-game-job.groovy', import.meta.url), 'utf8'),
@@ -124,11 +125,14 @@ test('same-host executor and resource stop gates match the operations budget', (
   assert.ok(preGate >= 0 && preGate < promoter);
   assert.match(pipeline, /"ops\/jenkins\/resource-gate[.]sh"/);
   assert.match(localDeploy, /"\$post_cd_resource_gate"/);
-  const health = promote.indexOf('curl -fsS --max-time 5 "http://127.0.0.1:$port/healthz"');
+  const health = promote.indexOf('loopback_curl -fsS --max-time 5 "http://127.0.0.1:$port/healthz"');
   const postGate = promote.indexOf('bash "$post_cd_resource_gate"');
   const commitOrder = promote.indexOf('> "$PLANE_GAME_RUNTIME_DIR/last_run_number"');
   const releaseTrap = promote.lastIndexOf('trap - EXIT');
   assert.ok(health >= 0 && health < postGate && postGate < commitOrder && commitOrder < releaseTrap);
+  for (const script of [common, promote]) {
+    assert.match(script, /curl --proxy '' --noproxy 127[.]0[.]0[.]1 --proto '=http' --max-redirs 0/);
+  }
   assert.match(docs, /p5 `MemAvailable >= 3[.]5 GiB`/);
   assert.match(docs, /p95 CPU busy.*2/);
   assert.match(docs, /`MemAvailable < 2 GiB`.*5 分钟/);

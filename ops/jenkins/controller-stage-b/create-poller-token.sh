@@ -10,6 +10,9 @@ token_file=${1:-"$HOME/.local/state/plane-game-poller/jenkins-api-token"}
 jenkins_url=http://127.0.0.1:18080
 poller_user=plane-actions-poller
 admin_user=plane-admin
+loopback_curl() {
+  curl --proxy '' --noproxy 127.0.0.1 --proto '=http' --max-redirs 0 "$@"
+}
 [[ "$(id -u)" == 1003 && "$(id -un)" == plane-preflight ]] || fail 'must run as plane-preflight UID 1003'
 [[ -f "$token_file" && ! -L "$token_file" && ! -s "$token_file" ]] || fail 'target must be one empty regular file'
 [[ "$(stat -c '%u %a' -- "$token_file")" == '1003 600' ]] || fail 'target owner/mode must be 1003/0600'
@@ -25,13 +28,13 @@ json_field() {
 }
 
 printf 'Jenkins will prompt twice for the plane-admin bootstrap password; input is not stored.\n' >&2
-crumb_json=$(curl --fail --silent --show-error --cookie-jar "$scratch/cookies" --user "$admin_user" \
+crumb_json=$(loopback_curl --fail --silent --show-error --cookie-jar "$scratch/cookies" --user "$admin_user" \
   "$jenkins_url/crumbIssuer/api/json")
 crumb_field=$(printf '%s' "$crumb_json" | json_field crumbRequestField)
 crumb_value=$(printf '%s' "$crumb_json" | json_field crumb)
 printf 'header = "%s: %s"\n' "$crumb_field" "$crumb_value" >"$scratch/crumb.conf"
 chmod 600 "$scratch/crumb.conf"
-response=$(curl --fail --silent --show-error --cookie "$scratch/cookies" --user "$admin_user" \
+response=$(loopback_curl --fail --silent --show-error --cookie "$scratch/cookies" --user "$admin_user" \
   --config "$scratch/crumb.conf" --request POST --data-urlencode 'newTokenName=plane-game-actions-poller-host' \
   "$jenkins_url/user/$poller_user/descriptorByName/jenkins.security.ApiTokenProperty/generateNewToken")
 token=$(printf '%s' "$response" | json_field data.tokenValue)

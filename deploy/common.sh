@@ -13,6 +13,9 @@ SNAPSHOTS_DIR="$RUNTIME_DIR/deployment-snapshots"
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '%s\n' "$*"; }
 now_utc() { date -u +%FT%TZ; }
+loopback_curl() {
+  curl --proxy '' --noproxy 127.0.0.1 --proto '=http' --max-redirs 0 "$@"
+}
 
 validate_sha() { [[ "$1" =~ ^[a-fA-F0-9]{40}$ ]] || die 'SHA must be a full 40-character git commit hash'; }
 validate_digest() { [[ "$1" =~ ^sha256:[a-fA-F0-9]{64}$ ]] || die 'digest must be a sha256: digest'; }
@@ -99,9 +102,9 @@ PY
 
 verify_gateway_route() {
   local url="http://127.0.0.1:$APP_PORT"
-  curl -fsS --retry 6 --retry-delay 1 --max-time 3 "$url/healthz" >/dev/null &&
-    curl -fsS --retry 6 --retry-delay 1 --max-time 3 "$url/" | grep -qi '<html' &&
-    [[ "$(curl -fsS --retry 6 --retry-delay 1 --max-time 3 "$url/version.json")" == "{\"sha\":\"$1\"}" ]]
+  loopback_curl -fsS --retry 6 --retry-delay 1 --max-time 3 "$url/healthz" >/dev/null &&
+    loopback_curl -fsS --retry 6 --retry-delay 1 --max-time 3 "$url/" | grep -qi '<html' &&
+    [[ "$(loopback_curl -fsS --retry 6 --retry-delay 1 --max-time 3 "$url/version.json")" == "{\"sha\":\"$1\"}" ]]
 }
 
 read_route_sha() {
@@ -260,7 +263,7 @@ preflight_readonly() {
   if [[ -n "$gateway" ]]; then
     health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$gateway")
     [[ "$health" == healthy ]] || die 'current gateway is not healthy; use rollback or diagnose before an update'
-    curl -fsS --max-time 3 "http://127.0.0.1:$APP_PORT/healthz" >/dev/null || die 'current route health check failed preflight'
+    loopback_curl -fsS --max-time 3 "http://127.0.0.1:$APP_PORT/healthz" >/dev/null || die 'current route health check failed preflight'
   else
     [[ -z "$(gateway_container_any_state)" ]] || die 'gateway container exists but is stopped; diagnose it before a first deployment'
     port_is_available || die 'audited host port is occupied'

@@ -160,6 +160,8 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
     throw new Error('public-source no-auth metadata is incomplete');
   }
   requireMatch(tokenHelper, /jenkins_url=http:\/\/127[.]0[.]0[.]1:18080/, 'token helper is not fixed loopback-only');
+  requireMatch(tokenHelper, /curl --proxy '' --noproxy 127[.]0[.]0[.]1 --proto '=http' --max-redirs 0/,
+    'token helper must bypass inherited proxies');
   requireMatch(tokenHelper, /create\|rotate\|prune\|revoke/, 'token lifecycle operations are incomplete');
   requireMatch(tokenHelper, /flock -x 9/, 'token lifecycle lock is missing');
   requireMatch(tokenHelper, /sync -f "\$token_tmp"[\s\S]*mv -f -- "\$token_tmp" "\$token_file"/,
@@ -174,6 +176,10 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
 
   requireMatch(gateway, /DOCKER_HOST=unix:\/\/\/run\/user\/1003\/docker[.]sock/, 'gateway must use rootless Docker');
   requireMatch(gateway, /JENKINS_URL=http:\/\/127[.]0[.]0[.]1:18080/, 'gateway must reach loopback Jenkins only');
+  requireMatch(gateway, /UnsetEnvironment=.*HTTP_PROXY.*http_proxy.*NODE_OPTIONS.*NODE_USE_ENV_PROXY/,
+    'gateway must clear inherited proxy and Node proxy-enablement variables');
+  requireMatch(health, /curl --proxy '' --noproxy 127[.]0[.]0[.]1 --proto '=http' --max-redirs 0/,
+    'controller healthcheck must bypass inherited proxies');
   requireMatch(gateway, /Restart=no/, 'gateway must not auto-restart');
   requireMatch(gateway, /WEBHOOK_SECRET_FILE=%h\/.config\/plane-game\/credentials\/webhook-secret/, 'gateway credential must be a file reference');
   forbid(gateway, /^User=|^Group=|^\[Install\]|^WantedBy=/m, 'root-level or enableable gateway unit is forbidden');

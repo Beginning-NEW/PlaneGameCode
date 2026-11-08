@@ -167,6 +167,9 @@ test('SSH agent and gateway use fixed identity, file references, and disabled de
   assert.match(gateway, /Restart=no/);
   assert.match(gateway, /DOCKER_HOST=unix:\/\/\/run\/user\/1003\/docker[.]sock/);
   assert.match(gateway, /JENKINS_URL=http:\/\/127[.]0[.]0[.]1:18080/);
+  assert.match(gateway, /UnsetEnvironment=.*HTTP_PROXY.*http_proxy.*NODE_OPTIONS.*NODE_USE_ENV_PROXY/);
+  assert.match(health, /curl --proxy '' --noproxy 127[.]0[.]0[.]1 --proto '=http' --max-redirs 0/);
+  assert.match(tokenHelper, /curl --proxy '' --noproxy 127[.]0[.]0[.]1 --proto '=http' --max-redirs 0/);
   assert.match(rollback, /job -> poller -> gateway -> controller/);
   assert.match(rollback, /verify-disabled-restart/);
   assert.match(rollback, /first-release/);

@@ -1,5 +1,7 @@
 # Private Actions poller package
 
+All host-loopback Jenkins and runtime checks use direct Node HTTP sockets or curl with proxy disabled and redirects forbidden. The packaged poller and webhook services also remove inherited upper/lower-case proxy variables and Node environment-proxy enablement before launch, so a local Basic credential or health response cannot cross or be supplied by an inherited proxy.
+
 This package is configuration-only delivery evidence. It does not enable the Jenkins job, the poller timer, the webhook gateway, or a deployment. `CD_TRIGGER_MODE` remains committed as `disabled` in the service and Jenkins defaults; both user-service paths refuse a disabled, missing, unknown, or mismatched selector. Controlled enablement remains a separate Operations action.
 
 ## Fixed trust and request graph

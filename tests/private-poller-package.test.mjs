@@ -36,6 +36,9 @@ test('poller package is disabled, five-minute bounded, and mutually exclusive wi
   assert.match(casc, /key: "CD_TRIGGER_MODE"\s+value: "disabled"/);
   assert.match(service, /Environment=CD_TRIGGER_MODE=disabled/);
   assert.match(webhookService, /Environment=CD_TRIGGER_MODE=disabled/);
+  for (const unit of [service, webhookService]) {
+    assert.match(unit, /UnsetEnvironment=.*HTTP_PROXY.*http_proxy.*NODE_OPTIONS.*NODE_USE_ENV_PROXY/);
+  }
   assert.match(service, /PLANE_POLLER_JENKINS_CREDENTIAL_FILE=%h\/.local\/state\/plane-game-poller\/jenkins-api-token/);
   assert.match(timer, /OnBootSec=5min[\s\S]*OnUnitActiveSec=5min/);
   assert.doesNotMatch(service, /^\[Install\]|^WantedBy=/m);
@@ -79,6 +82,7 @@ test('credential helper writes one file-backed username/token document without a
   assert.match(tokenHelper, /\.local\/state\/plane-game-poller\/jenkins-api-token/);
   assert.match(tokenHelper, /"username":"%s","token":"%s"/);
   assert.match(tokenHelper, /sync -f "\$token_tmp"[\s\S]*mv -f -- "\$token_tmp" "\$token_file"/);
+  assert.match(tokenHelper, /curl --proxy '' --noproxy 127[.]0[.]0[.]1 --proto '=http' --max-redirs 0/);
   assert.doesNotMatch(tokenHelper, /--user\s+[^\n]*:|export\s+[^\n]*(TOKEN|PASSWORD|SECRET)/i);
   assert.match(docs, /same service UID remains explicitly out of scope|same-service-UID replay/i);
   assert.match(docs, /attempt 1 cannot authorize attempt 2/);
