@@ -5,6 +5,8 @@ import importlib.util
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -17,12 +19,18 @@ policy = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(policy)
 
 
-def listing(*commands: str, defaults_header: str | None = None) -> bytes:
+def listing(
+    *commands: str,
+    defaults_header: str | None = None,
+    defaults: tuple[str, ...] = (
+        "env_reset, mail_badpass,",
+        "secure_path=/usr/local/sbin\\:/usr/local/bin\\:/usr/sbin\\:/usr/bin",
+    ),
+) -> bytes:
     header = defaults_header or "Matching Defaults entries for plane-preflight on target-host:"
     lines = [
         header,
-        "    env_reset, mail_badpass,",
-        "    secure_path=/usr/local/sbin\\:/usr/local/bin\\:/usr/sbin\\:/usr/bin",
+        *(f"    {entry}" for entry in defaults),
         "",
         "User plane-preflight may run the following commands on target-host:",
         *(f"    {command}" for command in commands),
@@ -52,6 +60,36 @@ class SudoListingTests(unittest.TestCase):
         for commands in rejected:
             with self.subTest(commands=commands), self.assertRaises(policy.PolicyError):
                 policy.parse_sudo_listing(listing(*commands), b"")
+
+    def test_environment_widening_and_unknown_defaults_fail(self) -> None:
+        rejected = [
+            ("setenv",),
+            ("!env_reset",),
+            ("env_reset, env_keep += PYTHONPATH",),
+            ("env_reset, env_file=/tmp/untrusted",),
+            ("env_reset, unknown_safe_looking_option",),
+            ("env_reset, env_reset",),
+            ("env_reset, secure_path=/usr/bin, secure_path=/bin",),
+            (),
+        ]
+        for defaults in rejected:
+            with self.subTest(defaults=defaults), self.assertRaises(policy.PolicyError):
+                policy.parse_sudo_listing(
+                    listing(policy.EXPECTED_COMMAND, defaults=defaults), b""
+                )
+
+    def test_reviewed_non_widening_defaults_pass(self) -> None:
+        policy.parse_sudo_listing(
+            listing(
+                policy.EXPECTED_COMMAND,
+                defaults=(
+                    "env_reset, mail_badpass,",
+                    "secure_path=/usr/local/sbin\\:/usr/local/bin\\:/usr/sbin\\:/usr/bin\\:/sbin\\:/bin,",
+                    "use_pty",
+                ),
+            ),
+            b"",
+        )
 
     def test_unexpected_locale_stderr_and_unparseable_output_fail(self) -> None:
         cases = [
@@ -142,6 +180,31 @@ class ProductionConstantsTests(unittest.TestCase):
         self.assertEqual(policy.REPORT_PATH, "/usr/local/sbin/plane-game-preflight-report")
         self.assertRegex(policy.REPORT_SHA256, r"^[0-9a-f]{64}$")
         self.assertNotEqual(policy.REPORT_SHA256, "0" * 64)
+
+    def test_isolated_mode_ignores_pythonpath_module_shadowing(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="plane-preflight-pythonpath-") as directory:
+            Path(directory, "hashlib.py").write_text(
+                "raise SystemExit(0)\n", encoding="utf-8"
+            )
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = directory
+            script = str(ROOT / "deploy" / "preflight_sudo_policy.py")
+            control = subprocess.run(
+                [sys.executable, script],
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            isolated = subprocess.run(
+                [sys.executable, "-I", script],
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(control.returncode, 0)
+            self.assertNotEqual(isolated.returncode, 0)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ done
 script_path=$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}") || fail 'cannot resolve the preflight package path'
 script_dir=$(/usr/bin/dirname -- "$script_path")
 [[ -x /usr/bin/python3 ]] || fail 'trusted Python interpreter is missing'
-/usr/bin/python3 "$script_dir/preflight_sudo_policy.py" || exit 1
+/usr/bin/python3 -I "$script_dir/preflight_sudo_policy.py" || exit 1
 
 socket="/run/user/$uid/docker.sock"
 [[ "${XDG_RUNTIME_DIR:-/run/user/$uid}" == "/run/user/$uid" ]] || fail 'runtime directory belongs to another user'

@@ -37,6 +37,8 @@ GitHub Actions 是 PR/main 重型 CI 和受保护 `main` 的唯一 GHCR 发布�
 - 既有 MSSQL/Postgres/Redis/new-api 的健康、延迟、CPU/IO 有回归；
 - rootless socket、回环端口、Aegis/替代安全基线或凭据边界不再成立。
 
+The fixed-report admission code runs under `/usr/bin/python3 -I`, ignores inherited Python search paths, and rejects any matching sudo Defaults outside the reviewed non-widening set (`env_reset`, `mail_badpass`, canonical `secure_path`, and optional `use_pty`). `setenv`, `!env_reset`, `env_keep`, unknown Defaults, and malformed output remain immediate No-Go conditions. This remains limited to the existing test-server preflight report contract and is not a general sudo allowance.
+
 ## Jenkins public-source identity and permissions
 
 The current repository and package rehearsal is deliberately no-PAT. SCM uses the exact allowlisted anonymous HTTPS URL and no Jenkins credential ID. Jenkins validates the public GitHub Actions exact-attempt endpoint and public main-ref endpoint without an Authorization header. It then resolves the public GHCR full-SHA tag, requires one canonical sha256 digest, and repeats that resolution immediately before deployment.

@@ -101,7 +101,7 @@ test('same-host executor and resource stop gates match the operations budget', (
   assert.match(gate, /minimum_disk_kib=36700160/);
   assert.match(gate, /memory_max.*402653184/);
   assert.match(gate, /cpu_period \* 25/);
-  assert.match(preflight, /\/usr\/bin\/python3/);
+  assert.match(preflight, /\/usr\/bin\/python3 -I "\$script_dir\/preflight_sudo_policy[.]py"/);
   assert.doesNotMatch(preflight, /command -v sudo|PATH=/);
   assert.match(sudoPolicy, /SUDO_BINARY = "\/usr\/bin\/sudo"/);
   assert.match(sudoPolicy, /\[SUDO_BINARY, "-n", "-l"\]/);

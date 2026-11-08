@@ -19,6 +19,7 @@ REPORT_SHA256 = "4951207e5609d1feee257774c4c671ce80d1c1adeee0199b58387bb98d6e68c
 EXPECTED_COMMAND = f'(root) NOPASSWD: {REPORT_PATH} ""'
 EXPECTED_USER = "plane-preflight"
 _HOST_RE = r"([A-Za-z0-9][A-Za-z0-9_.-]*)"
+_SAFE_BOOLEAN_DEFAULTS = frozenset({"env_reset", "mail_badpass", "use_pty"})
 
 
 class PolicyError(RuntimeError):
@@ -35,6 +36,45 @@ def _decode_exact(data: bytes, stream: str) -> str:
     if any(ord(character) < 32 and character not in "\n\t" for character in text):
         raise PolicyError(f"sudo {stream} contains unsupported control data")
     return text
+
+
+def _validate_defaults(lines: list[str]) -> None:
+    """Accept only the small, non-widening Defaults used by the test host."""
+    options: list[str] = []
+    for line in lines:
+        if not line:
+            continue
+        if not line[0].isspace():
+            raise PolicyError("sudo Defaults section contains unparseable output")
+        parts = line.strip().split(",")
+        if any(not part.strip() for part in parts[:-1]):
+            raise PolicyError("sudo Defaults section contains an empty option")
+        options.extend(part.strip() for part in parts if part.strip())
+
+    if not options or len(options) != len(set(options)):
+        raise PolicyError("sudo Defaults section is empty or contains duplicates")
+    if "env_reset" not in options:
+        raise PolicyError("sudo Defaults do not preserve environment isolation")
+    if sum(option.startswith("secure_path=") for option in options) > 1:
+        raise PolicyError("sudo Defaults contain duplicate secure_path options")
+
+    for option in options:
+        if option in _SAFE_BOOLEAN_DEFAULTS:
+            continue
+        if not option.startswith("secure_path="):
+            raise PolicyError("sudo Defaults contain an unreviewed effective option")
+        value = option.removeprefix("secure_path=").replace(r"\:", ":")
+        if chr(92) in value:
+            raise PolicyError("sudo secure_path contains unsupported escaping")
+        paths = value.split(":")
+        if not paths or any(
+            not path
+            or not PurePosixPath(path).is_absolute()
+            or str(PurePosixPath(path)) != path
+            or any(character.isspace() for character in path)
+            for path in paths
+        ):
+            raise PolicyError("sudo secure_path is not a canonical absolute path list")
 
 
 def parse_sudo_listing(stdout: bytes, stderr: bytes, *, user: str = EXPECTED_USER) -> None:
@@ -59,8 +99,7 @@ def parse_sudo_listing(stdout: bytes, stderr: bytes, *, user: str = EXPECTED_USE
     if len(indexes) != 1 or indexes[0] < 1:
         raise PolicyError("sudo command header is missing, repeated, or out of order")
     header_index = indexes[0]
-    if any(line and not line[0].isspace() for line in lines[1:header_index]):
-        raise PolicyError("sudo Defaults section contains unparseable output")
+    _validate_defaults(lines[1:header_index])
     commands = [line.strip() for line in lines[header_index + 1 :] if line.strip()]
     if commands != [EXPECTED_COMMAND]:
         raise PolicyError("effective sudo commands are not the one no-argument report rule")
