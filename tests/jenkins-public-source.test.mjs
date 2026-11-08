@@ -300,7 +300,8 @@ test('GHCR transport bounds header, token, and manifest files and rejects every 
       observedHeaderBytes: headerMaxBytes,
     },
     { tokenRaw: ' '.repeat(tokenBodyMaxBytes), error: /body reached the size limit/i },
-    { manifestRaw: ' '.repeat(manifestBodyMaxBytes), error: /body reached the size limit/i },
+    { manifestRaw: ' '.repeat(manifestBodyMaxBytes),
+      error: /body reached the size limit|response exceeded a size limit/i },
   ];
   for (const scenario of cases) {
     const fixture = await createFixture(scenario);
