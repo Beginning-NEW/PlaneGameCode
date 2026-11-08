@@ -147,6 +147,8 @@ test('SSH agent and gateway use fixed identity, file references, and disabled de
   assert.match(casc, /remoteFS: "\/home\/plane-preflight\/jenkins-agent"/);
   assert.match(casc, /numExecutors: 1/);
   assert.match(casc, /mode: EXCLUSIVE/);
+  assert.match(casc, /prefixStartSlaveCmd: "exec systemd-run --user --scope --quiet -p MemoryMax=384M -p CPUQuota=25% \/bin\/sh -c '"/);
+  assert.match(casc, /suffixStartSlaveCmd: "'"/);
   assert.match(casc, /scope: SYSTEM/);
   assert.match(casc, /manuallyProvidedKeyVerificationStrategy:/);
   assert.match(casc, /PLANE_AGENT_PRIVATE_KEY/);
@@ -184,6 +186,7 @@ test('negative contract rejects exposure, root units, executors, enabled jobs, b
   assert.throws(check({ job: job.replace('disabled(true)', 'disabled(false)') }), /default disabled/);
   assert.throws(check({ gateway: `${gateway}\n[Install]\nWantedBy=default.target\n` }), /root-level or enableable/);
   assert.throws(check({ casc: casc.replace('manuallyProvidedKeyVerificationStrategy', 'nonVerifyingKeyVerificationStrategy') }), /host-key/);
+  assert.throws(check({ casc: casc.replace('CPUQuota=25%', 'CPUQuota=50%') }), /SSH remoting scope/);
   assert.throws(check({ casc: `${casc}\n-----BEGIN PRIVATE KEY-----\n` }), /plaintext credential/);
   assert.throws(check({ scripts: `${scripts}\ndocker system prune\n` }), /broad or rootful/);
 });

@@ -143,7 +143,10 @@ export class DeploymentCoordinator {
     const candidate = candidatePolicy.exactCandidate(rawCandidate);
     if (!DIGEST_PATTERN.test(digest)) throw stateError('digest_invalid');
     const current = this.ledger.getState().deployments[candidate.triggerId];
-    if (current) return this.reconcile(candidate.triggerId);
+    if (current) {
+      if (current.digest !== digest) throw stateError('deployment_digest_conflict');
+      return this.reconcile(candidate.triggerId);
+    }
     const poller = this.ledger.getState().poller[candidate.triggerId];
     if (poller?.state !== 'building') throw stateError('poller_not_building');
     const previousGood = this.inspector.previousGood();
@@ -160,11 +163,55 @@ export class DeploymentCoordinator {
   }
 
   async reconcile(triggerId) {
-    const record = this.ledger.getState().deployments[triggerId];
+    let record = this.ledger.getState().deployments[triggerId];
     if (!record) throw stateError('deployment_missing');
+    if (record.state === 'deploy_observed') {
+      // No runtime side effect is allowed before the durable deploy intent.
+      this.ledger.recordDeployment(triggerId, 'deploy_intent');
+      record = this.ledger.getState().deployments[triggerId];
+    }
     if (record.state === 'rollback_intent') return this.completeRollback(triggerId);
-    if (['deploy_succeeded', 'failed', 'quarantined'].includes(record.state)) {
-      return { action: 'terminal', state: record.state };
+    if (record.state === 'rollback_verified') {
+      if (!record.previousGood || !await this.inspector.previousIsExact(record.previousGood)) {
+        return this.quarantine(triggerId, 'rollback_unverifiable');
+      }
+      this.ledger.recordDeployment(triggerId, 'failed', { failure: 'rollback_verified' });
+      record = this.ledger.getState().deployments[triggerId];
+    }
+    if (record.state === 'failed') {
+      const poller = this.ledger.getState().poller[triggerId];
+      if (!poller || poller.state === 'succeeded') {
+        return { action: 'quarantined', reason: 'terminal_state_mismatch' };
+      }
+      if (poller && !['failed', 'quarantined', 'succeeded'].includes(poller.state)) {
+        if (!record.previousGood || !await this.inspector.previousIsExact(record.previousGood)) {
+          return this.quarantine(triggerId, 'previous_good_unverifiable');
+        }
+        this.ledger.transitionPoller(triggerId, 'failed', { errorCode: record.failure ?? 'deploy_failed' });
+      }
+      return { action: 'terminal', state: 'failed' };
+    }
+    if (record.state === 'quarantined') {
+      this.quarantine(triggerId, record.quarantineReason ?? 'deployment_quarantined');
+      return { action: 'terminal', state: 'quarantined' };
+    }
+    if (record.state === 'deploy_succeeded') {
+      const observation = await this.inspector.observeCandidate(record.candidate, record.digest);
+      if (observation.kind !== 'healthy') return this.quarantine(triggerId, 'terminal_runtime_unverifiable');
+      const poller = this.ledger.getState().poller[triggerId];
+      if (!poller || ['failed', 'quarantined'].includes(poller.state)) {
+        return { action: 'quarantined', reason: 'terminal_state_mismatch' };
+      }
+      if (poller && !['succeeded', 'failed', 'quarantined'].includes(poller.state)) {
+        this.ledger.transitionPoller(triggerId, 'succeeded', { digest: record.digest });
+      }
+      return { action: 'recovered_success' };
+    }
+    const poller = this.ledger.getState().poller[triggerId];
+    if (poller?.state === 'building') {
+      this.ledger.transitionPoller(triggerId, 'deploy_claimed', { digest: record.digest });
+    } else if (poller?.state !== 'deploy_claimed') {
+      return this.quarantine(triggerId, 'poller_deployment_state_mismatch');
     }
     const observation = await this.inspector.observeCandidate(record.candidate, record.digest);
     if (observation.kind === 'healthy') {
@@ -225,8 +272,13 @@ export class DeploymentCoordinator {
     if (this.ledger.getState().deployments[triggerId].state === 'runtime_present') {
       this.ledger.recordDeployment(triggerId, 'health_verified');
     }
-    this.ledger.recordDeployment(triggerId, 'deploy_succeeded');
-    this.ledger.transitionPoller(triggerId, 'succeeded', { digest: record.digest });
+    if (this.ledger.getState().deployments[triggerId].state === 'health_verified') {
+      this.ledger.recordDeployment(triggerId, 'deploy_succeeded');
+    }
+    const poller = this.ledger.getState().poller[triggerId];
+    if (poller?.state !== 'succeeded') {
+      this.ledger.transitionPoller(triggerId, 'succeeded', { digest: record.digest });
+    }
   }
 
   quarantine(triggerId, reason) {

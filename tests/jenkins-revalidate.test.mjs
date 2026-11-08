@@ -39,6 +39,46 @@ async function queuedFixture(t) {
   return ledger;
 }
 
+async function recoveredBuildingFixture(t) {
+  const parent = await mkdtemp(join(tmpdir(), 'plane-jenkins-recovered-build-'));
+  const root = join(parent, 'state');
+  SecureLedger.initialize(root);
+  const ledger = new SecureLedger(root, { now: () => NOW });
+  ledger.admitCandidate(candidate.triggerId, 58);
+  for (let index = 0; index < 10; index += 1) ledger.recordRequest(candidate.triggerId);
+  ledger.transitionPoller(candidate.triggerId, 'observed', { candidate });
+  ledger.transitionPoller(candidate.triggerId, 'eligible', { initialEvidenceHash: 'a'.repeat(64) });
+  ledger.transitionPoller(candidate.triggerId, 'post_intent', { evidenceHash: 'a'.repeat(64) });
+  ledger.reconcilePoller(candidate.triggerId, {
+    state: 'building',
+    buildNumber: '41',
+    buildUrl: `${jobUrl}41/`,
+  });
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  return ledger;
+}
+
+test('a reconciled build keeps five reserved calls and only its exact live Jenkins identity can resume', async (t) => {
+  const ledger = await recoveredBuildingFixture(t);
+  let validations = 0;
+  assert.deepEqual(await revalidateJenkinsCandidate({
+    ledger,
+    candidate,
+    client: {},
+    environment: buildEnvironment,
+    validate: async () => { validations += 1; return { pass: true }; },
+  }), { pass: true });
+  await assert.rejects(revalidateJenkinsCandidate({
+    ledger,
+    candidate,
+    client: {},
+    environment: { ...buildEnvironment, BUILD_NUMBER: '42' },
+    validate: async () => { validations += 1; },
+  }), { code: 'jenkins_build_identity_mismatch' });
+  assert.equal(validations, 1);
+  assert.equal(ledger.getState().poller[candidate.triggerId].state, 'building');
+  assert.equal(ledger.getState().budget.reservations[candidate.triggerId].remaining, 5);
+});
 test('queued build records exact Jenkins identity before validation and the same in-flight build resumes', async (t) => {
   const ledger = await queuedFixture(t);
   const validations = [];

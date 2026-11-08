@@ -183,6 +183,7 @@ test('Jenkins response body secret echo is terminal and reconciliation requires 
     { name: 'GITHUB_RUN_ID', value: candidate.runId },
     { name: 'GITHUB_RUN_ATTEMPT', value: candidate.runAttempt },
     { name: 'TRIGGER_ID', value: candidate.triggerId },
+    { name: 'WEBHOOK_DELIVERY_UUID', value: '' },
   ] }];
   const responses = [
     new Response(JSON.stringify({ items: [
@@ -196,4 +197,21 @@ test('Jenkins response body secret echo is terminal and reconciliation requires 
     fetchImpl: async () => responses.shift(),
   });
   await assert.rejects(reconcileClient.reconcile(candidate), { code: 'jenkins_reconcile_ambiguous' });
+
+  const mixedActions = structuredClone(actions);
+  mixedActions[0].parameters.push({ name: 'DEPLOY_PORT', value: '80' });
+  const mixedResponses = [
+    new Response(JSON.stringify({ items: [
+      { id: 3, url: 'http://127.0.0.1:18080/queue/item/3/',
+        task: { url: 'http://127.0.0.1:18080/job/plane-game/job/main-cd/' }, actions: mixedActions },
+    ] }), { status: 200, headers: { 'x-jenkins': '2', 'x-hudson': '1', 'content-type': 'application/json' } }),
+    new Response(JSON.stringify({ builds: [] }), {
+      status: 200, headers: { 'x-jenkins': '2', 'x-hudson': '1', 'content-type': 'application/json' },
+    }),
+  ];
+  const mixedClient = new JenkinsPollerClient({
+    credentialProvider: { get: () => ({ username: 'plane-actions-poller', token }) },
+    fetchImpl: async () => mixedResponses.shift(),
+  });
+  await assert.rejects(mixedClient.reconcile(candidate), { code: 'jenkins_reconcile_ambiguous' });
 });

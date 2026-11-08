@@ -115,9 +115,10 @@ function matchesTrigger(actions, candidate) {
     ['GITHUB_RUN_ID', candidate.runId],
     ['GITHUB_RUN_ATTEMPT', candidate.runAttempt],
     ['TRIGGER_ID', candidate.triggerId],
+    ['WEBHOOK_DELIVERY_UUID', ''],
   ]);
   const actual = parameters(actions);
-  return [...expected].every(([name, value]) => {
+  return actual.length === expected.size && [...expected].every(([name, value]) => {
     const matches = actual.filter((entry) => entry?.name === name);
     return matches.length === 1 && String(matches[0].value ?? '') === value;
   });
@@ -187,7 +188,8 @@ export class JenkinsPollerClient {
       queue.response.headers.get('content-type') ?? '')) throw jenkinsError('jenkins_reconcile_failed');
     let queuePayload;
     try { queuePayload = JSON.parse(queue.body); } catch { throw jenkinsError('jenkins_reconcile_failed'); }
-    const queueMatches = (queuePayload.items ?? []).filter((item) =>
+    if (!Array.isArray(queuePayload.items)) throw jenkinsError('jenkins_reconcile_failed');
+    const queueMatches = queuePayload.items.filter((item) =>
       item?.task?.url === `${JENKINS_ORIGIN}${JOB_PATH}/` && matchesTrigger(item.actions, candidate));
 
     const builds = await this.request(
@@ -196,7 +198,8 @@ export class JenkinsPollerClient {
       builds.response.headers.get('content-type') ?? '')) throw jenkinsError('jenkins_reconcile_failed');
     let buildPayload;
     try { buildPayload = JSON.parse(builds.body); } catch { throw jenkinsError('jenkins_reconcile_failed'); }
-    const buildMatches = (buildPayload.builds ?? []).filter((item) => matchesTrigger(item.actions, candidate));
+    if (!Array.isArray(buildPayload.builds)) throw jenkinsError('jenkins_reconcile_failed');
+    const buildMatches = buildPayload.builds.filter((item) => matchesTrigger(item.actions, candidate));
     if (queueMatches.length + buildMatches.length !== 1) throw jenkinsError('jenkins_reconcile_ambiguous');
     if (queueMatches.length === 1) return { state: 'queued', ...queueIdentity(queueMatches[0].url) };
     const build = buildMatches[0];

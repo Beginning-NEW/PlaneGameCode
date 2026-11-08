@@ -25,7 +25,37 @@ export class PrivateActionsPoller {
     this.logger = logger;
   }
 
+  async reconcilePending() {
+    const pending = Object.entries(this.ledger.getState().poller)
+      .filter(([, record]) => ['post_intent', 'quarantined'].includes(record.state) &&
+        record.reconcileAttempted !== true && record.evidenceHash &&
+        !record.queueId && !record.buildNumber)
+      .sort((left, right) => left[1].updatedAtMs - right[1].updatedAtMs);
+    if (pending.length === 0) return null;
+    const [triggerId, record] = pending[0];
+    let recovered;
+    try {
+      const prepared = this.jenkinsClient.prepareAuthorization();
+      const result = await this.jenkinsClient.reconcile(record.candidate, prepared);
+      recovered = this.ledger.reconcilePoller(triggerId, result);
+    } catch (error) {
+      if (this.ledger.getState().poller[triggerId]?.reconcileAttempted !== true) {
+        this.ledger.reconcilePoller(triggerId, null, safeCode(error));
+      }
+      this.ledger.cancelReservation(triggerId, safeCode(error));
+      this.logger({ outcome: 'quarantined', code: safeCode(error), triggerId });
+      throw error;
+    }
+    if (['failed', 'quarantined'].includes(recovered.state)) {
+      this.ledger.cancelReservation(triggerId, 'jenkins_reconciled_terminal');
+    }
+    this.logger({ outcome: 'reconciled', code: recovered.state, triggerId });
+    return { outcome: 'reconciled', state: recovered.state, triggerId };
+  }
+
   async runOnce() {
+    const recovery = await this.reconcilePending();
+    if (recovery) return recovery;
     const state = this.ledger.getState();
     const discovery = await this.githubClient.get(
       `${githubPolicy.REPOSITORY_PATH}/actions/workflows/checks.yml/runs?branch=main&event=push&status=completed&per_page=100`,
@@ -85,7 +115,9 @@ export class PrivateActionsPoller {
       if (record && !['post_intent', 'queued', 'quarantined'].includes(record.state)) {
         this.ledger.transitionPoller(candidate.triggerId, 'failed', { errorCode: safeCode(error) });
       }
-      this.ledger.cancelReservation(candidate.triggerId, safeCode(error));
+      if (!record || !['post_intent', 'queued', 'quarantined'].includes(record.state)) {
+        this.ledger.cancelReservation(candidate.triggerId, safeCode(error));
+      }
       this.logger({ outcome: 'failed', code: safeCode(error), triggerId: candidate.triggerId });
       throw error;
     }

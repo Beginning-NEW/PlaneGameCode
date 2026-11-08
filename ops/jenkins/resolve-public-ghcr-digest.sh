@@ -34,6 +34,7 @@ request() {
   status=$(
     ulimit -f "$CURL_FILE_LIMIT_KIB" || exit 125
     exec curl --silent --show-error --retry 0 --connect-timeout 10 --max-time 30 \
+      --proxy '' --noproxy 'ghcr.io' --proto '=https' --max-redirs 0 \
       --max-filesize "$body_max_bytes" \
       --dump-header "$headers" --output "$body" --write-out '%{http_code}' "$@"
   ) || fail 'registry response exceeded a size limit or was unavailable or timed out'

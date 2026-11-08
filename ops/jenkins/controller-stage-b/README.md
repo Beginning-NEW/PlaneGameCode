@@ -67,6 +67,8 @@ Operations must execute this on a disposable Stage B rehearsal home before readi
 
 JCasC declares one exclusive `plane-game-cd-rootless` SSH agent with one executor and remote root `/home/plane-preflight/jenkins-agent`. The launcher uses a manually provided Ed25519 host key, never trust-on-first-use or a non-verifying strategy.
 
+The SSH launcher wraps the remoting command in a UID-1003 user scope with `MemoryMax=384M` and `CPUQuota=25%`. Before enabling CD, Operations must verify the live remoting process and a build step both report `memory.max <= 402653184` and `cpu.max <= 25%` from their own cgroups, then run `ops/jenkins/resource-gate.sh` inside that build. Sudo-policy remediation is intentionally outside this package.
+
 No credential value is committed. JCasC strict secret resolution is enabled; every required value uses an explicit, trimmed `/run/secrets` file read. Before a separately approved start, the operator supplies these distinct files from the approved credential/configuration workflow:
 
 - `agent-host`;

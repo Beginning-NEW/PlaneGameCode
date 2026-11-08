@@ -316,4 +316,110 @@ test('Jenkins redirects and ambiguous POST outcomes quarantine without a second 
   });
   assert.equal(posts, 1);
   assert.equal(ledger.getState().poller[TRIGGER_ID].state, 'quarantined');
+  assert.equal(ledger.getState().budget.reservations[TRIGGER_ID].remaining, 5);
+});
+
+function persistPostIntent(ledger, { quarantined = false } = {}) {
+  const candidate = { sha: SHA, runId: RUN_ID, runAttempt: ATTEMPT, triggerId: TRIGGER_ID };
+  ledger.admitCandidate(TRIGGER_ID, 58);
+  for (let index = 0; index < 10; index += 1) ledger.recordRequest(TRIGGER_ID);
+  ledger.transitionPoller(TRIGGER_ID, 'observed', { candidate });
+  ledger.transitionPoller(TRIGGER_ID, 'eligible', { initialEvidenceHash: 'a'.repeat(64) });
+  ledger.transitionPoller(TRIGGER_ID, 'post_intent', { evidenceHash: 'a'.repeat(64) });
+  if (quarantined) ledger.transitionPoller(TRIGGER_ID, 'quarantined', { errorCode: 'jenkins_outcome_unknown' });
+}
+
+test('restart reconciles a durable POST intent before a would-be discovery 304 and never posts again', async (t) => {
+  const { root, ledger } = await ledgerFixture(t);
+  persistPostIntent(ledger);
+  let reconciliations = 0;
+  let discoveries = 0;
+  const poller = new PrivateActionsPoller({
+    ledger: new SecureLedger(root, { now: () => NOW }),
+    githubClient: { get: async () => { discoveries += 1; return { status: 304 }; } },
+    jenkinsClient: {
+      prepareAuthorization: () => ({}),
+      reconcile: async (candidate) => {
+        assert.equal(candidate.triggerId, TRIGGER_ID);
+        reconciliations += 1;
+        return { state: 'queued', queueId: '17', queueUrl: 'http://127.0.0.1:18080/queue/item/17/' };
+      },
+      enqueue: () => { throw new Error('duplicate POST'); },
+    },
+  });
+  const result = await poller.runOnce();
+  assert.deepEqual(result, { outcome: 'reconciled', state: 'queued', triggerId: TRIGGER_ID });
+  assert.equal(reconciliations, 1);
+  assert.equal(discoveries, 0);
+  assert.equal(new SecureLedger(root, { now: () => NOW }).getState().poller[TRIGGER_ID].state, 'queued');
+  assert.equal(new SecureLedger(root, { now: () => NOW }).getState().budget.reservations[TRIGGER_ID].remaining, 5);
+});
+
+test('timeout-quarantined intent recovers one exact build without reposting', async (t) => {
+  const { root, ledger } = await ledgerFixture(t);
+  persistPostIntent(ledger, { quarantined: true });
+  const poller = new PrivateActionsPoller({
+    ledger: new SecureLedger(root, { now: () => NOW }),
+    githubClient: { get: () => { throw new Error('discovery must wait for reconciliation'); } },
+    jenkinsClient: {
+      prepareAuthorization: () => ({}),
+      reconcile: async () => ({ state: 'building', buildNumber: '19',
+        buildUrl: 'http://127.0.0.1:18080/job/plane-game/job/main-cd/19/' }),
+      enqueue: () => { throw new Error('duplicate POST'); },
+    },
+  });
+  assert.equal((await poller.runOnce()).state, 'building');
+  const recovered = new SecureLedger(root, { now: () => NOW }).getState().poller[TRIGGER_ID];
+  assert.equal(recovered.buildNumber, '19');
+  assert.equal(recovered.buildUrl, 'http://127.0.0.1:18080/job/plane-game/job/main-cd/19/');
+  assert.equal(recovered.reconcileAttempted, true);
+  assert.equal(new SecureLedger(root, { now: () => NOW }).getState()
+    .budget.reservations[TRIGGER_ID].remaining, 5);
+});
+
+test('missing or ambiguous Jenkins evidence quarantines once without retry', async (t) => {
+  for (const code of ['jenkins_reconcile_ambiguous', 'jenkins_reconcile_failed']) {
+    const { root, ledger } = await ledgerFixture(t);
+    persistPostIntent(ledger);
+    let calls = 0;
+    const jenkinsClient = {
+      prepareAuthorization: () => ({}),
+      reconcile: async () => { calls += 1; throw Object.assign(new Error(code), { code }); },
+      enqueue: () => { throw new Error('duplicate POST'); },
+    };
+    const restarted = new PrivateActionsPoller({
+      ledger: new SecureLedger(root, { now: () => NOW }),
+      githubClient: { get: async () => ({ status: 304 }) },
+      jenkinsClient,
+    });
+    await assert.rejects(restarted.runOnce(), { code });
+    const state = new SecureLedger(root, { now: () => NOW }).getState();
+    assert.equal(state.poller[TRIGGER_ID].state, 'quarantined');
+    assert.equal(state.poller[TRIGGER_ID].reconcileAttempted, true);
+    assert.equal((await restarted.runOnce()).outcome, 'unchanged');
+    assert.equal(calls, 1);
+  }
+});
+
+test('reconciled terminal Jenkins failure cannot retry the same tuple', async (t) => {
+  const { root, ledger } = await ledgerFixture(t);
+  persistPostIntent(ledger);
+  let reconciliations = 0;
+  const poller = new PrivateActionsPoller({
+    ledger: new SecureLedger(root, { now: () => NOW }),
+    githubClient: { get: async () => ({ status: 304 }) },
+    jenkinsClient: {
+      prepareAuthorization: () => ({}),
+      reconcile: async () => {
+        reconciliations += 1;
+        return { state: 'completed', buildNumber: '21',
+          buildUrl: 'http://127.0.0.1:18080/job/plane-game/job/main-cd/21/', result: 'FAILURE' };
+      },
+      enqueue: () => { throw new Error('duplicate POST'); },
+    },
+  });
+  assert.equal((await poller.runOnce()).state, 'failed');
+  assert.equal(new SecureLedger(root, { now: () => NOW }).getState().budget.reservations[TRIGGER_ID].remaining, 0);
+  assert.equal((await poller.runOnce()).outcome, 'unchanged');
+  assert.equal(reconciliations, 1);
 });

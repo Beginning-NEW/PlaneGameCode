@@ -51,6 +51,91 @@ test('deploy intent is durable before side effects and exact healthy recovery ne
   assert.equal(ledger.getState().poller[triggerId].state, 'succeeded');
 });
 
+test('crash after deploy_observed completes the intent before no-side-effect disposition', async (t) => {
+  const { ledger, coordinator } = await fixture(t, inspector());
+  ledger.recordDeployment(triggerId, 'deploy_observed', {
+    candidate: { ...candidate, triggerId }, digest, previousGood: previous,
+    runtimeIdentity: `plane-game-${candidate.sha}`,
+  });
+  assert.deepEqual(await coordinator.begin(candidate, digest), { action: 'no_side_effect_failure' });
+  assert.equal(ledger.getState().deployments[triggerId].state, 'failed');
+  assert.equal(ledger.getState().poller[triggerId].state, 'failed');
+});
+
+test('crash between deployment intent and poller claim recovers one exact healthy runtime', async (t) => {
+  const { ledger, coordinator } = await fixture(t, inspector({ observation: { kind: 'healthy' } }));
+  ledger.recordDeployment(triggerId, 'deploy_observed', {
+    candidate: { ...candidate, triggerId }, digest, previousGood: previous,
+    runtimeIdentity: `plane-game-${candidate.sha}`,
+  });
+  ledger.recordDeployment(triggerId, 'deploy_intent');
+  assert.deepEqual(await coordinator.begin(candidate, digest), { action: 'recovered_success' });
+  assert.equal(ledger.getState().deployments[triggerId].state, 'deploy_succeeded');
+  assert.equal(ledger.getState().poller[triggerId].state, 'succeeded');
+});
+
+test('crash after deployment success repairs poller only after exact runtime proof', async (t) => {
+  const { ledger, coordinator } = await fixture(t, inspector({ observation: { kind: 'healthy' } }));
+  await coordinator.begin(candidate, digest);
+  ledger.recordDeployment(triggerId, 'runtime_present');
+  ledger.recordDeployment(triggerId, 'health_verified');
+  ledger.recordDeployment(triggerId, 'deploy_succeeded');
+  assert.equal(ledger.getState().poller[triggerId].state, 'deploy_claimed');
+  await assert.rejects(coordinator.begin(candidate, `sha256:${'a'.repeat(64)}`), {
+    code: 'deployment_digest_conflict',
+  });
+  assert.deepEqual(await coordinator.begin(candidate, digest), { action: 'recovered_success' });
+  assert.equal(ledger.getState().poller[triggerId].state, 'succeeded');
+});
+
+test('crash after rollback verification records failure without repeating rollback', async (t) => {
+  const { ledger, coordinator } = await fixture(t, inspector());
+  await coordinator.begin(candidate, digest);
+  ledger.recordDeployment(triggerId, 'rollback_intent');
+  ledger.recordDeployment(triggerId, 'rollback_verified');
+  assert.deepEqual(await coordinator.reconcile(triggerId), { action: 'terminal', state: 'failed' });
+  assert.equal(ledger.getState().deployments[triggerId].state, 'failed');
+  assert.equal(ledger.getState().poller[triggerId].state, 'failed');
+});
+
+test('deploy_succeeded repair quarantines unless the exact candidate runtime is still healthy', async (t) => {
+  const { ledger, coordinator } = await fixture(t, inspector({ observation: { kind: 'mismatch' } }));
+  await coordinator.begin(candidate, digest);
+  ledger.recordDeployment(triggerId, 'runtime_present');
+  ledger.recordDeployment(triggerId, 'health_verified');
+  ledger.recordDeployment(triggerId, 'deploy_succeeded');
+  assert.deepEqual(await coordinator.reconcile(triggerId), {
+    action: 'quarantined',
+    reason: 'terminal_runtime_unverifiable',
+  });
+  assert.equal(ledger.getState().deployments[triggerId].state, 'deploy_succeeded');
+  assert.equal(ledger.getState().poller[triggerId].state, 'quarantined');
+});
+
+test('rollback_verified repair quarantines without a second rollback when previous-good proof is lost', async (t) => {
+  const { ledger, coordinator } = await fixture(t, inspector({ previousExact: false }));
+  await coordinator.begin(candidate, digest);
+  ledger.recordDeployment(triggerId, 'rollback_intent');
+  ledger.recordDeployment(triggerId, 'rollback_verified');
+  assert.deepEqual(await coordinator.reconcile(triggerId), {
+    action: 'quarantined',
+    reason: 'rollback_unverifiable',
+  });
+  assert.equal(ledger.getState().deployments[triggerId].state, 'quarantined');
+  assert.equal(ledger.getState().poller[triggerId].state, 'quarantined');
+});
+
+test('failed cross-ledger repair re-observes previous-good before changing the poller ledger', async (t) => {
+  const { ledger, coordinator } = await fixture(t, inspector({ previousExact: false }));
+  await coordinator.begin(candidate, digest);
+  ledger.recordDeployment(triggerId, 'failed', { failure: 'no_side_effect' });
+  assert.deepEqual(await coordinator.reconcile(triggerId), {
+    action: 'quarantined',
+    reason: 'previous_good_unverifiable',
+  });
+  assert.equal(ledger.getState().deployments[triggerId].state, 'failed');
+  assert.equal(ledger.getState().poller[triggerId].state, 'quarantined');
+});
 test('zero candidate plus exact previous good records no-side-effect terminal failure', async (t) => {
   const { ledger, coordinator } = await fixture(t, inspector());
   await coordinator.begin(candidate, digest);

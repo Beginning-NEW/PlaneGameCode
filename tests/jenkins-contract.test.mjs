@@ -79,6 +79,8 @@ test('public registries use no login, a blank Docker config, re-resolution, and 
   assert.match(resolveDigest, /TOKEN_BODY_MAX_BYTES=65536/);
   assert.match(resolveDigest, /MANIFEST_BODY_MAX_BYTES=1048576/);
   assert.match(resolveDigest, /ulimit -f "\$CURL_FILE_LIMIT_KIB"/);
+  assert.match(resolveDigest, /--proxy '' --noproxy 'ghcr[.]io'/);
+  assert.match(resolveDigest, /--proto '=https' --max-redirs 0/);
   assert.match(resolveDigest, /--max-filesize "\$body_max_bytes"/);
   assert.match(resolveDigest, /wc -c < "\$headers"/);
   assert.match(resolveDigest, /wc -c < "\$body"/);

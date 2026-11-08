@@ -116,6 +116,8 @@ def agentValid = agent != null &&
   agent.getLabelString().split(/\s+/).contains('plane-game-cd-rootless') &&
   launcher instanceof SSHLauncher &&
   launcher.getCredentialsId() == 'plane-game-agent-ssh' &&
+  launcher.getPrefixStartSlaveCmd() == "exec systemd-run --user --scope --quiet -p MemoryMax=384M -p CPUQuota=25% /bin/sh -c '" &&
+  launcher.getSuffixStartSlaveCmd() == "'" &&
   launcher.getSshHostKeyVerificationStrategy() instanceof ManuallyProvidedKeyVerificationStrategy &&
   launcher.getSshHostKeyVerificationStrategy().getKey()?.startsWith('ssh-ed25519 ')
 if (!agentValid) {

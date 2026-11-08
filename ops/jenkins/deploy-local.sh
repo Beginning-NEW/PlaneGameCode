@@ -35,7 +35,6 @@ root="$HOME/plane-game"
 incoming="$root/incoming"
 stage="$incoming/$sha-$run_number-$run_attempt"
 mkdir -p "$incoming"
-[[ ! -e "$stage" ]] || { echo 'Run-specific deployment source already exists' >&2; exit 1; }
 
 if [[ "$mode" == poller ]]; then
   [[ "$state_dir" == "$HOME/.local/state/plane-game-poller" && -f "$state_cli" && ! -L "$state_cli" ]] || exit 1
@@ -59,6 +58,8 @@ if [[ "$mode" == poller ]]; then
     *) echo "Deployment reconciliation refused: $action" >&2; exit 1 ;;
   esac
 fi
+
+[[ ! -e "$stage" ]] || { echo 'Run-specific deployment source already exists' >&2; exit 1; }
 
 stage_tmp=$(mktemp -d "$incoming/.candidate.$sha.$run_number.$run_attempt.XXXXXX")
 docker_config=$(mktemp -d "$incoming/.docker-public.$run_number.$run_attempt.XXXXXX")

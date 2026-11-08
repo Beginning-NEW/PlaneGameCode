@@ -390,6 +390,49 @@ export class SecureLedger {
     });
   }
 
+  reconcilePoller(triggerId, result, errorCode = null) {
+    return this.mutate('poller_reconciled', { triggerId, result: result?.state ?? null, errorCode }, (state) => {
+      const existing = state.poller[triggerId];
+      if (!existing || !['post_intent', 'quarantined'].includes(existing.state) ||
+          existing.reconcileAttempted === true || existing.queueId || existing.buildNumber ||
+          existing.candidate?.triggerId !== triggerId || !/^[0-9a-f]{64}$/.test(existing.evidenceHash ?? '')) {
+        throw ledgerError('poller_reconciliation_invalid');
+      }
+      let nextState = 'quarantined';
+      const evidence = {};
+      if (result?.state === 'queued' && /^[1-9][0-9]*$/.test(result.queueId ?? '') &&
+          result.queueUrl === `http://127.0.0.1:18080/queue/item/${result.queueId}/`) {
+        nextState = 'queued';
+        evidence.queueId = result.queueId;
+        evidence.queueUrl = result.queueUrl;
+      } else if (result?.state === 'building' && /^[1-9][0-9]*$/.test(result.buildNumber ?? '') &&
+          result.buildUrl === `http://127.0.0.1:18080/job/plane-game/job/main-cd/${result.buildNumber}/`) {
+        nextState = 'building';
+        evidence.buildNumber = result.buildNumber;
+        evidence.buildUrl = result.buildUrl;
+      } else if (result?.state === 'completed' && /^[1-9][0-9]*$/.test(result.buildNumber ?? '') &&
+          result.buildUrl === `http://127.0.0.1:18080/job/plane-game/job/main-cd/${result.buildNumber}/` &&
+          result.result !== 'SUCCESS' &&
+          ['FAILURE', 'ABORTED', 'UNSTABLE', 'NOT_BUILT'].includes(result.result)) {
+        nextState = 'failed';
+        evidence.buildNumber = result.buildNumber;
+        evidence.buildUrl = result.buildUrl;
+        evidence.buildResult = result.result;
+      } else if (result !== null && result !== undefined && result.state !== 'completed') {
+        throw ledgerError('poller_reconciliation_invalid');
+      }
+      state.poller[triggerId] = {
+        ...existing,
+        ...evidence,
+        state: nextState,
+        reconcileAttempted: true,
+        reconciliationErrorCode: errorCode,
+        updatedAtMs: this.now(),
+      };
+      return clone(state.poller[triggerId]);
+    });
+  }
+
   recordDeployment(triggerId, nextState, details = {}) {
     const allowed = {
       deploy_observed: ['deploy_intent'],
@@ -397,7 +440,7 @@ export class SecureLedger {
       runtime_present: ['health_verified', 'rollback_intent', 'quarantined'],
       health_verified: ['deploy_succeeded', 'rollback_intent', 'quarantined'],
       rollback_intent: ['rollback_verified', 'quarantined'],
-      rollback_verified: ['failed'],
+      rollback_verified: ['failed', 'quarantined'],
       deploy_succeeded: [],
       failed: [],
       quarantined: [],

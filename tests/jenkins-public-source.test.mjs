@@ -31,6 +31,10 @@ body=''
 headers=''
 url=''
 max_filesize=''
+proxy_marker=unset
+noproxy=''
+proto=''
+max_redirs=''
 while (($#)); do
   case "$1" in
     --dump-header|--output)
@@ -41,6 +45,22 @@ while (($#)); do
       ;;
     --max-filesize)
       max_filesize=$2
+      shift 2
+      ;;
+    --proxy)
+      proxy_marker=$2
+      shift 2
+      ;;
+    --noproxy)
+      noproxy=$2
+      shift 2
+      ;;
+    --proto)
+      proto=$2
+      shift 2
+      ;;
+    --max-redirs)
+      max_redirs=$2
       shift 2
       ;;
     --write-out|--retry|--connect-timeout|--max-time|--config|--header|-H)
@@ -70,8 +90,13 @@ case "$url" in
     cp "$MOCK_PUBLIC_FIXTURE/main.json" "$body"
     ;;
   https://ghcr.io/token*)
+    [[ "$proxy_marker" == '' && "$noproxy" == ghcr.io && "$proto" == '=https' && "$max_redirs" == 0 ]]
     [[ "$max_filesize" == 65536 ]]
     [[ "$MOCK_PUBLIC_MODE" != registry-timeout ]] || exit 28
+    [[ "$MOCK_PUBLIC_MODE" != registry-redirect ]] || {
+      status=302
+      printf 'Location: https://example.invalid/redirect\r\n' >> "$headers"
+    }
     [[ "$MOCK_PUBLIC_MODE" != registry-504 ]] || status=504
     [[ "$MOCK_PUBLIC_MODE" != registry-rate ]] || printf 'RateLimit-Remaining: 0\r\n' >> "$headers"
     [[ "$MOCK_PUBLIC_MODE" != registry-header-at-cap ]] ||
@@ -83,6 +108,7 @@ case "$url" in
     cp "$MOCK_PUBLIC_FIXTURE/token.json" "$body"
     ;;
   https://ghcr.io/v2/beginning-new/planegamecode/manifests/*)
+    [[ "$proxy_marker" == '' && "$noproxy" == ghcr.io && "$proto" == '=https' && "$max_redirs" == 0 ]]
     [[ "$max_filesize" == 1048576 ]]
     cp "$MOCK_PUBLIC_FIXTURE/manifest.json" "$body"
     case "$MOCK_PUBLIC_MODE" in
@@ -172,6 +198,8 @@ async function createFixture({
       MOCK_DOCKER_EVENTS: join(root, 'docker-events.log'),
       MOCK_DOCKER_FAIL_ON: '',
       DOCKER_CONFIG: dockerConfig,
+      HTTPS_PROXY: 'http://127.0.0.1:9',
+      ALL_PROXY: 'socks5h://127.0.0.1:9',
     },
     cleanup: () => rm(root, { recursive: true, force: true }),
   };
@@ -233,6 +261,7 @@ test('production shell fails closed on public API and registry transport, HTTP, 
     { mode: 'github-rate', error: /rate limit exhausted/i },
     { mode: 'registry-timeout', error: /unavailable or timed out/i },
     { mode: 'registry-504', error: /HTTP 504/ },
+    { mode: 'registry-redirect', error: /HTTP 302/ },
     { mode: 'registry-rate', error: /rate limit is exhausted/i },
     { mode: 'digest-malformed', error: /canonical sha256 digest/i },
     { mode: 'digest-multiple', error: /canonical sha256 digest/i },
@@ -252,6 +281,16 @@ test('production shell fails closed on public API and registry transport, HTTP, 
   }
 });
 
+test('GHCR succeeds without Content-Length while hostile inherited proxies remain set', { skip: !canRunShellDrills }, async () => {
+  const fixture = await createFixture({ mode: 'registry-no-content-length' });
+  try {
+    const result = run('ops/jenkins/resolve-public-ghcr-digest.sh', ['Beginning-NEW/PlaneGameCode', sha], fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), digest);
+  } finally {
+    await fixture.cleanup();
+  }
+});
 test('GHCR transport bounds header, token, and manifest files and rejects every reached cap', { skip: !canRunShellDrills }, async () => {
   const cases = [
     { mode: 'registry-header-at-cap', error: /headers reached the size limit/i },
