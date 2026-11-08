@@ -11,6 +11,9 @@ const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const sha = 'a'.repeat(40);
 const digest = `sha256:${'b'.repeat(64)}`;
 const changedDigest = `sha256:${'c'.repeat(64)}`;
+const headerMaxBytes = 1024 * 1024;
+const tokenBodyMaxBytes = 64 * 1024;
+const manifestBodyMaxBytes = 1024 * 1024;
 
 const [pipeline, casc, job, images, pullHelper] = await Promise.all([
   readFile(new URL('../Jenkinsfile', import.meta.url), 'utf8'),
@@ -27,6 +30,7 @@ set -euo pipefail
 body=''
 headers=''
 url=''
+max_filesize=''
 while (($#)); do
   case "$1" in
     --dump-header|--output)
@@ -34,6 +38,10 @@ while (($#)); do
       value=$2
       shift 2
       [[ "$option" == --dump-header ]] && headers=$value || body=$value
+      ;;
+    --max-filesize)
+      max_filesize=$2
+      shift 2
       ;;
     --write-out|--retry|--connect-timeout|--max-time|--config|--header|-H)
       shift 2
@@ -62,12 +70,20 @@ case "$url" in
     cp "$MOCK_PUBLIC_FIXTURE/main.json" "$body"
     ;;
   https://ghcr.io/token*)
+    [[ "$max_filesize" == 65536 ]]
     [[ "$MOCK_PUBLIC_MODE" != registry-timeout ]] || exit 28
     [[ "$MOCK_PUBLIC_MODE" != registry-504 ]] || status=504
     [[ "$MOCK_PUBLIC_MODE" != registry-rate ]] || printf 'RateLimit-Remaining: 0\r\n' >> "$headers"
+    [[ "$MOCK_PUBLIC_MODE" != registry-header-at-cap ]] ||
+      dd if=/dev/zero of="$headers" bs=1048576 count=1 status=none
+    [[ "$MOCK_PUBLIC_MODE" != registry-header-over-cap ]] || {
+      trap 'wc -c < "$headers" > "$MOCK_PUBLIC_FIXTURE/header-bytes.log"' EXIT
+      dd if=/dev/zero of="$headers" bs=1048577 count=1 status=none
+    }
     cp "$MOCK_PUBLIC_FIXTURE/token.json" "$body"
     ;;
   https://ghcr.io/v2/beginning-new/planegamecode/manifests/*)
+    [[ "$max_filesize" == 1048576 ]]
     cp "$MOCK_PUBLIC_FIXTURE/manifest.json" "$body"
     case "$MOCK_PUBLIC_MODE" in
       digest-malformed) printf 'Docker-Content-Digest: latest\r\n' >> "$headers" ;;
@@ -118,7 +134,15 @@ function expectedRun(overrides = {}) {
   };
 }
 
-async function createFixture({ run = expectedRun(), mainSha = sha, manifest = { schemaVersion: 2 }, token = 'fixture-public-token=', mode = '' } = {}) {
+async function createFixture({
+  run = expectedRun(),
+  mainSha = sha,
+  manifest = { schemaVersion: 2 },
+  manifestRaw,
+  token = 'fixture-public-token=',
+  tokenRaw,
+  mode = '',
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), 'plane-public-source-'));
   const bin = join(root, 'bin');
   const dockerConfig = join(root, 'docker-config');
@@ -126,8 +150,8 @@ async function createFixture({ run = expectedRun(), mainSha = sha, manifest = { 
   await mkdir(dockerConfig);
   await writeFile(join(root, 'run.json'), JSON.stringify(run));
   await writeFile(join(root, 'main.json'), JSON.stringify({ object: { sha: mainSha } }));
-  await writeFile(join(root, 'token.json'), JSON.stringify({ token }));
-  await writeFile(join(root, 'manifest.json'), JSON.stringify(manifest));
+  await writeFile(join(root, 'token.json'), tokenRaw ?? JSON.stringify({ token }));
+  await writeFile(join(root, 'manifest.json'), manifestRaw ?? JSON.stringify(manifest));
   await writeFile(join(dockerConfig, 'config.json'), '{}\n');
   await writeFile(join(bin, 'curl'), mockCurl, { mode: 0o755 });
   await writeFile(join(bin, 'docker'), mockDocker, { mode: 0o755 });
@@ -226,6 +250,41 @@ test('production shell fails closed on public API and registry transport, HTTP, 
       await fixture.cleanup();
     }
   }
+});
+
+test('GHCR transport bounds header, token, and manifest files and rejects every reached cap', { skip: !canRunShellDrills }, async () => {
+  const cases = [
+    { mode: 'registry-header-at-cap', error: /headers reached the size limit/i },
+    {
+      mode: 'registry-header-over-cap',
+      error: /size limit/i,
+      observedHeaderBytes: headerMaxBytes,
+    },
+    { tokenRaw: ' '.repeat(tokenBodyMaxBytes), error: /body reached the size limit/i },
+    { manifestRaw: ' '.repeat(manifestBodyMaxBytes), error: /body reached the size limit/i },
+  ];
+  for (const scenario of cases) {
+    const fixture = await createFixture(scenario);
+    try {
+      const result = run('ops/jenkins/verify-candidate.sh', [sha, '9001', '2'], fixture);
+      assert.notEqual(result.status, 0, `${scenario.mode ?? 'body cap'} unexpectedly passed`);
+      assert.match(result.stderr, scenario.error);
+      if (scenario.observedHeaderBytes) {
+        const observed = Number.parseInt(
+          await readFile(join(fixture.root, 'header-bytes.log'), 'utf8'),
+          10,
+        );
+        assert.equal(observed, scenario.observedHeaderBytes);
+      }
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
+test('GHCR file-size ceilings remain explicit and independently bounded', () => {
+  assert.equal(headerMaxBytes, manifestBodyMaxBytes);
+  assert.ok(tokenBodyMaxBytes < manifestBodyMaxBytes);
 });
 
 test('digest-only pull helper re-resolves then pulls both exact public images with an empty config', { skip: !canRunShellDrills }, async () => {

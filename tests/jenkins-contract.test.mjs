@@ -75,6 +75,13 @@ test('public registries use no login, a blank Docker config, re-resolution, and 
   assert.match(resolveDigest, /ghcr[.]io\/token[?]scope=/);
   assert.match(resolveDigest, /docker-content-digest/);
   assert.match(resolveDigest, /--retry 0.*--connect-timeout 10.*--max-time 30/s);
+  assert.match(resolveDigest, /HEADER_MAX_BYTES=1048576/);
+  assert.match(resolveDigest, /TOKEN_BODY_MAX_BYTES=65536/);
+  assert.match(resolveDigest, /MANIFEST_BODY_MAX_BYTES=1048576/);
+  assert.match(resolveDigest, /ulimit -f "\$CURL_FILE_LIMIT_KIB"/);
+  assert.match(resolveDigest, /--max-filesize "\$body_max_bytes"/);
+  assert.match(resolveDigest, /wc -c < "\$headers"/);
+  assert.match(resolveDigest, /wc -c < "\$body"/);
   assert.match(resolveDigest, /rate limit is exhausted/);
   assert.match(publicImages, /^NGINX_BASE_IMAGE=.*@sha256:[0-9a-f]{64}$/m);
   assert.match(publicImages, /^GATEWAY_IMAGE=.*@sha256:[0-9a-f]{64}$/m);

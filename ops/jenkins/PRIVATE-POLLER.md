@@ -4,7 +4,7 @@ This package is configuration-only delivery evidence. It does not enable the Jen
 
 ## Fixed trust and request graph
 
-The poller accepts only `Beginning-NEW/PlaneGameCode`, `.github/workflows/checks.yml`, completed successful `push` runs on `main`, and the current public `main` SHA. All GitHub REST traffic is HTTPS to `api.github.com`; image resolution is HTTPS to `ghcr.io`; Jenkins is exactly `http://127.0.0.1:18080`. Redirects, proxy-derived destinations, `Link` pagination, response truncation, malformed JSON, missing rate headers, and any unlisted path/query fail closed.
+The poller accepts only `Beginning-NEW/PlaneGameCode`, `.github/workflows/checks.yml`, completed successful `push` runs on `main`, and the current public `main` SHA. All GitHub REST traffic is HTTPS to `api.github.com`; image resolution is HTTPS to `ghcr.io`; Jenkins is exactly `http://127.0.0.1:18080`. Redirects, proxy-derived destinations, `Link` pagination, response truncation, malformed JSON, missing rate headers, and any unlisted path/query fail closed. GHCR resolution caps the token body at 64 KiB, the manifest body at 1 MiB, and each header file at 1 MiB while curl is running; every file is measured after download and reaching a cap is rejected.
 
 One changed candidate has a fixed 16-call graph:
 
