@@ -31,7 +31,7 @@ docker compose version
 ## 2. 配置与发布预检
 
 1. 从 CTO/工程师核对候选 SHA、CI run、镜像仓库与不可变 digest；验证所拉取镜像的 digest 对应批准 SHA。确认 QA/CMO 的放行结果及 CEO Go/No-Go 要求。保存 `previous_healthy_sha`、上一健康镜像 digest、当前应用 Compose 配置 revision、上一专属 Nginx 配置 SHA-256/备份位置。首次发布如果没有之前健康应用版本，明确记录「首次发布，无旧应用可切回」，用撤回专属站点及停止本应用作为事先批准的回退目标；不要伪称已有健康 SHA 或已完成双版本回滚演练。
-2. 仅在完成审计后，将 `nginx/plane-demo.conf.template` 的三个标记替换为审计选定的纯数字回环端口、**已签发且仅属本子域**的 fullchain 与私钥绝对路径。核验生成文件没有标记残留，`server_name` 仅为目标子域，证书文件可由 Nginx 读到；保存生成配置 SHA-256 和上一版专属文件备份。证书尚未签发时先按批准的 ACME 流程签发，不启用指向不存在证书的 443 站点。ACME challenge 的临时配置必须只限本子域，先语法检查并记录回退；不能扩大到 www。
+2. 仅在完成审计后，将 `nginx/plane-demo.conf.template` 的两个证书标记替换为**已签发且仅属本子域**的 fullchain 与私钥绝对路径。应用上游固定为 `127.0.0.1:18081`；只有 TLS 虚拟主机中的精确 `POST /github/workflow-run` 路由可代理到 HMAC-first 准入网关 `127.0.0.1:9080`，并保留 GitHub delivery/event/signature 请求头。Jenkins controller `127.0.0.1:18080` 不得出现在任何 Nginx `listen` 或 `proxy_pass` 中。先运行 `node ops/nginx/check-plane-demo-contract.mjs`，再核验生成文件没有标记残留、`server_name` 仅为目标子域且证书文件可由 Nginx 读到；保存生成配置 SHA-256 和上一版专属文件备份。证书尚未签发时先按批准的 ACME 流程签发，不启用指向不存在证书的 443 站点。ACME challenge 的临时配置必须只限本子域，先语法检查并记录回退；不能扩大到 www。
 3. 检查 Compose 解析结果：只操作明确命名的本应用 service，镜像必须锁定已批准的 SHA/digest；端口必须仅是 `127.0.0.1:<审计端口>:<容器端口>`，不映射 `0.0.0.0`、80 或 443。验证目标端口可用、镜像存在且可启动、`/healthz` 返回预期结果；不得调用不带服务名的 `docker compose down`、`up` 或 `pull` 影响其他容器。若工程脚本尚未交付，先审查/预演其无副作用模式，再考虑部署。
 4. 记录每次变更的执行者、UTC 起始时间、候选/恢复 SHA、镜像 digest、Compose 与专属 Nginx 配置 revision、变更前健康/www 摘要；先执行 `nginx -t` 并核验通过，再对专属站点做最小变更和 `nginx -t`，最后才最小 reload。校验失败立刻恢复上一专属文件、复检 `nginx -t`；不调整其他站点配置。
 
@@ -58,7 +58,7 @@ docker compose version
 | 项目 | 当前状态 |
 | --- | --- |
 | 服务器站点/80/443/监听/容器/www 快照 | 未获受限 SSH，未审计 |
-| 子域 DNS、证书路径、回环端口 | 未获受限访问，未验证、未选择 |
+| 子域 DNS、证书路径、回环端口 | 应用 `18081` 与 webhook 网关 `9080` 已版本化；服务器监听、DNS 与证书仍未获受限访问及验证 |
 | 候选 SHA/digest、上一健康 SHA、配置 revision | 工程候选与生产历史未交付，未验证 |
 | Nginx 语法、容器/公开健康、TLS、www 前后 | 未执行生产预检或变更 |
 | 实际部署/回滚/自动更新 | 未执行，未上线 |
