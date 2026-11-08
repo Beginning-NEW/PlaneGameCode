@@ -183,6 +183,16 @@ write_release_record() {
     printf 'GATEWAY_CONFIG_DIGEST=%s\n' "$(gateway_config_digest)"
     printf 'HEALTH_STATUS=healthy\n'
     printf 'RECORDED_AT=%s\n' "$(now_utc)"
+    if [[ "${CD_TRIGGER_MODE:-}" == poller ]]; then
+      [[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ && "${GITHUB_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]] ||
+        die 'poller release tuple missing'
+      [[ "${PLANE_TRIGGER_ID:-}" == "$sha:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" ]] ||
+        die 'poller release trigger mismatch'
+      printf 'GITHUB_RUN_ID=%s\n' "$GITHUB_RUN_ID"
+      printf 'GITHUB_RUN_ATTEMPT=%s\n' "$GITHUB_RUN_ATTEMPT"
+      printf 'TRIGGER_ID=%s\n' "$PLANE_TRIGGER_ID"
+      printf 'RUNTIME_IDENTITY=plane-game-%s\n' "$sha"
+    fi
   } > "$temp"
   mv -f "$temp" "$release_dir_path/release.env"
 }

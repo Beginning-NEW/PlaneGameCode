@@ -56,15 +56,17 @@ function initialState() {
 
 function assertDirectory(path, uid) {
   const metadata = lstatSync(path);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== uid ||
-      (metadata.mode & 0o777) !== 0o700) {
+  const permissionsInvalid = process.platform !== 'win32' &&
+    (metadata.uid !== uid || (metadata.mode & 0o777) !== 0o700);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink() || permissionsInvalid) {
     throw ledgerError('ledger_directory_unsafe');
   }
 }
 
 function assertRegular(metadata, uid) {
-  if (!metadata.isFile() || metadata.nlink !== 1 || metadata.uid !== uid ||
-      (metadata.mode & 0o777) !== 0o600) {
+  const permissionsInvalid = process.platform !== 'win32' &&
+    (metadata.uid !== uid || (metadata.mode & 0o777) !== 0o600);
+  if (!metadata.isFile() || metadata.nlink !== 1 || permissionsInvalid) {
     throw ledgerError('ledger_file_unsafe');
   }
 }
@@ -92,6 +94,7 @@ function readRegular(path, uid) {
 }
 
 function fsyncDirectory(path) {
+  if (process.platform === 'win32') return;
   const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY);
   try {
     fsyncSync(fd);
@@ -182,13 +185,14 @@ function reservedCount(state) {
 }
 
 export class SecureLedger {
-  static initialize(root, { uid = process.getuid?.(), nowMs = Date.now() } = {}) {
+  static initialize(root, { uid = process.getuid?.() ?? 0 } = {}) {
     if (!Number.isInteger(uid)) throw ledgerError('uid_unavailable');
     if (!existsSync(root)) mkdirSync(root, { mode: 0o700, recursive: false });
     assertDirectory(root, uid);
     const journalPath = join(root, 'journal.ndjson');
     const snapshotPath = join(root, 'snapshot.json');
-    if (existsSync(journalPath) || existsSync(snapshotPath)) throw ledgerError('ledger_already_initialized');
+    const lockPath = join(root, '.shared.lock');
+    if (existsSync(journalPath) || existsSync(snapshotPath) || existsSync(lockPath)) throw ledgerError('ledger_already_initialized');
     let fd = openSync(journalPath,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
       0o600);
@@ -196,26 +200,33 @@ export class SecureLedger {
     fsyncSync(fd);
     closeSync(fd);
     const state = initialState();
-    state.clock.lastMs = nowMs;
     atomicWrite(snapshotPath, `${canonical({ version: 1, seq: 0, head: ZERO_HASH, state })}\n`, uid);
+    fd = openSync(lockPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600);
+    fchmodSync(fd, 0o600);
+    fsyncSync(fd);
+    closeSync(fd);
     fsyncDirectory(root);
   }
 
-  constructor(root, { uid = process.getuid?.(), now = () => Date.now() } = {}) {
+  constructor(root, { uid = process.getuid?.() ?? 0, now = () => Date.now() } = {}) {
     if (!Number.isInteger(uid)) throw ledgerError('uid_unavailable');
     this.root = root;
     this.uid = uid;
     this.now = now;
     this.journalPath = join(root, 'journal.ndjson');
     this.snapshotPath = join(root, 'snapshot.json');
+    this.lockPath = join(root, '.shared.lock');
     this.load();
   }
 
   load() {
     assertDirectory(this.root, this.uid);
-    if (!existsSync(this.journalPath) || !existsSync(this.snapshotPath)) {
+    if (!existsSync(this.journalPath) || !existsSync(this.snapshotPath) || !existsSync(this.lockPath)) {
       throw ledgerError('ledger_not_initialized');
     }
+    if (readRegular(this.lockPath, this.uid) !== '') throw ledgerError('ledger_lock_unsafe');
     const entries = parseJournal(readRegular(this.journalPath, this.uid));
     const head = verifyJournal(entries);
     const snapshot = validateSnapshot(JSON.parse(readRegular(this.snapshotPath, this.uid)));

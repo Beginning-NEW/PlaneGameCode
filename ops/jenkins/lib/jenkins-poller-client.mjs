@@ -19,12 +19,13 @@ function jenkinsError(code, message = code) {
 
 function assertPrivateDirectory(path, uid) {
   const metadata = lstatSync(path);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== uid ||
-      (metadata.mode & 0o777) !== 0o700) throw jenkinsError('credential_unavailable');
+  const permissionsInvalid = process.platform !== 'win32' &&
+    (metadata.uid !== uid || (metadata.mode & 0o777) !== 0o700);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink() || permissionsInvalid) throw jenkinsError('credential_unavailable');
 }
 
 export class JenkinsCredentialProvider {
-  constructor(path, { uid = process.getuid?.() } = {}) {
+  constructor(path, { uid = process.getuid?.() ?? 0 } = {}) {
     this.path = path;
     this.uid = uid;
   }
@@ -36,8 +37,9 @@ export class JenkinsCredentialProvider {
       assertPrivateDirectory(dirname(this.path), this.uid);
       fd = openSync(this.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const metadata = fstatSync(fd);
-      if (!metadata.isFile() || metadata.nlink !== 1 || metadata.uid !== this.uid ||
-          (metadata.mode & 0o777) !== 0o600 || metadata.size > 4096) {
+      const permissionsInvalid = process.platform !== 'win32' &&
+        (metadata.uid !== this.uid || (metadata.mode & 0o777) !== 0o600);
+      if (!metadata.isFile() || metadata.nlink !== 1 || permissionsInvalid || metadata.size > 4096) {
         throw jenkinsError('credential_unavailable');
       }
       const value = JSON.parse(readFileSync(fd, 'utf8'));
@@ -113,7 +115,7 @@ export class JenkinsPollerClient {
   prepareAuthorization() {
     const credential = this.credentialProvider.get();
     return {
-      header: `Basic ${Buffer.from(`${credential.username}:${credential.token}`).toString('base64')}`,
+      authorization: `Basic ${Buffer.from(`${credential.username}:${credential.token}`).toString('base64')}`,
       token: credential.token,
     };
   }

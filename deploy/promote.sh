@@ -13,6 +13,19 @@ sha="$1"; repo="$2"; digest="$3"; port="$4"; run="$5"; attempt="$6"; gateway_ima
 export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
 docker info --format '{{json .SecurityOptions}}' | grep -q rootless || { echo 'Rootless Docker is required' >&2; exit 1; }
 root="$HOME/plane-game"
+poller_mode=false
+if [[ "${CD_TRIGGER_MODE:-}" == poller ]]; then
+  [[ "${PLANE_POLLER_STATE_DIR:-}" == "$HOME/.local/state/plane-game-poller" ]] || exit 1
+  [[ "${PLANE_DEPLOYMENT_STATE_CLI:-}" == */ops/jenkins/deployment-state.mjs &&
+     -f "$PLANE_DEPLOYMENT_STATE_CLI" && ! -L "$PLANE_DEPLOYMENT_STATE_CLI" ]] || exit 1
+  [[ "${PLANE_LEDGER_LOCK_FILE:-}" == "$PLANE_POLLER_STATE_DIR/.shared.lock" &&
+     -f "$PLANE_LEDGER_LOCK_FILE" && ! -L "$PLANE_LEDGER_LOCK_FILE" ]] || exit 1
+  [[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ && "${GITHUB_RUN_ATTEMPT:-}" == "$attempt" ]] || exit 1
+  [[ "${PLANE_TRIGGER_ID:-}" == "$sha:$GITHUB_RUN_ID:$attempt" ]] || exit 1
+  poller_mode=true
+  state_call() { flock --no-fork --nonblock "$PLANE_LEDGER_LOCK_FILE" node "$PLANE_DEPLOYMENT_STATE_CLI" "$@"; }
+fi
+
 stage="$root/incoming/$sha-$run-$attempt"
 [[ "$PWD" == "$root" && -f "$stage/compose.yaml" && -f "$stage/deploy/deploy.sh" && -f "$stage/deploy/deployment-id.sh" ]] || exit 1
 [[ -z "$(find "$stage" -type l -print -quit)" ]] || { echo 'Source archive contains a symlink' >&2; exit 1; }
@@ -138,6 +151,14 @@ failed() {
   code="$?"
   trap - EXIT
   if [[ "$code" -eq 0 ]]; then return; fi
+  if "$poller_mode"; then
+    if ! state_call rollback-intent "$PLANE_POLLER_STATE_DIR" \
+      "$PLANE_GAME_RUNTIME_DIR" "$PLANE_TRIGGER_ID" "promotion_failed" >/dev/null; then
+      echo 'ALERT: durable rollback intent could not be recorded; automatic rollback refused' >&2
+      return
+    fi
+  fi
+
   recovery=restored
   if [[ -z "$old_sha" ]]; then
     recovery=first_reverted
@@ -178,6 +199,13 @@ failed() {
   done
   [[ -z "$old_sha" ]] || rm -f "$PLANE_GAME_PROMOTION_CONTEXT"
   printf 'sha=%s digest=%s gateway=%s time=%s health=failed recovery=%s\n' "$sha" "$digest" "$gateway_image" "$(date -u +%FT%TZ)" "$recovery" >&2
+  if "$poller_mode"; then
+    if ! state_call rollback-complete "$PLANE_POLLER_STATE_DIR" \
+      "$PLANE_GAME_RUNTIME_DIR" "$PLANE_TRIGGER_ID" >/dev/null; then
+      echo 'ALERT: rollback result is not authoritative; tuple quarantined' >&2
+      set_recovery_incomplete
+    fi
+  fi
 }
 trap failed EXIT
 cp "$stage/compose.yaml" "$root/compose.yaml"

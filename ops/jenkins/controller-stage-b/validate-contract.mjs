@@ -18,6 +18,16 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
     ? JSON.parse(credentialManifest) : credentialManifest;
   const controller = manifest.controller;
   if (manifest.defaultState !== 'disabled') throw new Error('Stage B must default disabled');
+  if (manifest.triggerSelector?.default !== 'disabled' ||
+      manifest.triggerSelector?.allowed?.join(',') !== 'disabled,poller,webhook' ||
+      manifest.triggerSelector?.simultaneousPathsAllowed !== false) {
+    throw new Error('trigger selector contract changed');
+  }
+  if (manifest.poller?.defaultState !== 'disabled' || manifest.poller?.interval !== '5m' ||
+      manifest.poller?.requestCeilingPerRollingHour !== 30 ||
+      manifest.poller?.candidateCeilingPerRollingHour !== 1 || manifest.poller?.candidateGraphRequests !== 16) {
+    throw new Error('poller budget/default contract changed');
+  }
   if (controller.hostBinding !== '127.0.0.1:18080:8080') throw new Error('controller must be loopback-only on 18080');
   if (controller.forbiddenHostPorts.join(',') !== '8080,50000') throw new Error('forbidden port contract changed');
   if (controller.executors !== 0 || controller.inboundAgentPort !== -1) throw new Error('controller executor or agent port changed');
@@ -53,6 +63,7 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(casc, /privateKeySource:\s*directEntry:/, 'JCasC SSH private-key source must use directEntry');
   requireMatch(casc, /manuallyProvidedKeyVerificationStrategy:/, 'fixed host-key verifier missing');
   requireMatch(casc, /sshHostKeyVerificationStrategy:/, 'SSH launcher host-key field is missing');
+  requireMatch(casc, /key: "CD_TRIGGER_MODE"\s+value: "disabled"/, 'global trigger selector must default disabled');
   forbid(casc, /\s+hostKeyVerificationStrategy:/, 'obsolete SSH launcher host-key field is unsupported');
   requireMatch(init, /getSshHostKeyVerificationStrategy\(\)/, 'SSH launcher readiness check uses an obsolete getter');
   requireMatch(casc, /PLANE_AGENT_ED25519_HOST_KEY/, 'Ed25519 host-key file reference missing');
@@ -73,6 +84,16 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(job, /userPermission\('hudson[.]model[.]Item[.]Build', 'plane-webhook-gateway'\)/,
     'gateway job build grant must identify a user');
   requireMatch(job, /folder\('plane-game'\)[\s\S]*Item[.]Read[\s\S]*plane-webhook-gateway/, 'gateway folder read grant missing');
+  requireMatch(job, /userPermission\('hudson[.]model[.]Item[.]Read', 'plane-actions-poller'\)/,
+    'poller folder/job read grant missing');
+  requireMatch(job, /userPermission\('hudson[.]model[.]Item[.]Build', 'plane-actions-poller'\)/,
+    'poller job build grant missing');
+  requireMatch(job, /folder\('plane-game'\)[\s\S]*Item[.]Read[\s\S]*plane-actions-poller/,
+    'poller folder read grant missing');
+  forbid(job, /Item[.](Configure|Delete).*plane-actions-poller/, 'poller has a forbidden job grant');
+  for (const parameter of ['TRIGGER_SOURCE', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'TRIGGER_ID', 'WEBHOOK_DELIVERY_UUID']) {
+    requireMatch(job, new RegExp(`stringParam\\('${parameter}'`), `poller-compatible parameter missing: ${parameter}`);
+  }
   requireMatch(job, /Item[.]Read'[\s\S]*plane-webhook-gateway[\s\S]*Item[.]Build'[\s\S]*plane-webhook-gateway/, 'gateway job read/build grants missing');
   requireMatch(job, /url\('https:\/\/github[.]com\/Beginning-NEW\/PlaneGameCode[.]git'\)/, 'anonymous SCM allowlist is missing');
   forbid(job, /credentials\(/, 'public SCM checkout must not use a credential ID');
@@ -82,6 +103,10 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(init, /fresh home requires the one-time admin bcrypt bootstrap file/, 'fresh-home fail-closed gate missing');
   requireMatch(init, /createAccountWithHashedPassword\(adminId, hashedPassword\)/, 'bcrypt bootstrap API missing');
   requireMatch(init, /bootstrap file must be removed after its one-time application/, 'one-time bootstrap replay rejection missing');
+  requireMatch(init, /plane-actions-poller/, 'dedicated poller principal readiness check missing');
+  requireMatch(init, /poller global authorization is not least privilege/, 'poller global denial proof missing');
+  requireMatch(init, /poller job authorization or disabled state is invalid/, 'poller job denial proof missing');
+
   requireMatch(init, /CredentialsProvider[.]VIEW/, 'gateway credential-view denial proof missing');
   requireMatch(init, /Jenkins[.]RUN_SCRIPTS/, 'gateway Script Console denial proof missing');
   requireMatch(init, /stage-b-ready-v2/, 'authorization readiness marker missing');

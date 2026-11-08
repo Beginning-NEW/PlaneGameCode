@@ -39,6 +39,21 @@ function assertAllowedUrl(value) {
   if (!patterns.some((pattern) => pattern.test(url.pathname))) {
     throw clientError('github_path_forbidden');
   }
+  let queryAllowed = false;
+  if (url.pathname.endsWith('/actions/workflows/checks.yml/runs')) {
+    queryAllowed = url.search === '?branch=main&event=push&status=completed&per_page=100';
+  } else if (url.pathname.endsWith('/approvals') || url.pathname.endsWith('/statuses')) {
+    queryAllowed = url.search === '?per_page=100';
+  } else if (url.pathname === `${REPOSITORY_PATH}/deployments`) {
+    queryAllowed = /^[0-9a-f]{40}$/.test(url.searchParams.get('sha') ?? '') &&
+      url.searchParams.get('environment') === 'production' &&
+      url.searchParams.get('per_page') === '100' &&
+      [...url.searchParams.keys()].sort().join(',') === 'environment,per_page,sha';
+  } else {
+    queryAllowed = url.search === '';
+  }
+  if (!queryAllowed) throw clientError('github_query_forbidden');
+
   return url;
 }
 

@@ -58,6 +58,8 @@ test('deployment entrypoints reject missing or tampered fixed ports before side 
   const digest = `sha256:${'b'.repeat(64)}`;
   const gateway = `nginxinc/nginx-unprivileged@sha256:${'c'.repeat(64)}`;
   const localArgs = [
+    'webhook',
+    '/unused-poller-state',
     sha,
     'ghcr.io/beginning-new/planegamecode',
     digest,
@@ -81,10 +83,10 @@ test('deployment entrypoints reject missing or tampered fixed ports before side 
 
   for (const port of ['', '9999']) {
     const localResult = run(join(root, 'ops/jenkins/deploy-local.sh'), [
-      ...localArgs.slice(0, 3),
+      ...localArgs.slice(0, 5),
       port,
-      ...localArgs.slice(4),
-    ]);
+      ...localArgs.slice(6),
+    ], { env: { CD_TRIGGER_MODE: 'webhook' } });
     assert.notEqual(localResult.status, 0);
     assert.match(localResult.stderr, /DEPLOY_PORT must be the versioned value 18081/);
 

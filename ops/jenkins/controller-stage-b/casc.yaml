@@ -5,6 +5,11 @@ jenkins:
   slaveAgentPort: -1
   quietPeriod: 5
   disableRememberMe: true
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: "CD_TRIGGER_MODE"
+            value: "disabled"
   securityRealm:
     local:
       allowsSignup: false

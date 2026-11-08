@@ -13,6 +13,18 @@ IMAGE_REPOSITORY="$2"
 IMAGE_DIGEST="$3"
 export APP_PORT="$4"
 export GATEWAY_IMAGE="$5"
+runtime_labels=()
+if [[ "${CD_TRIGGER_MODE:-}" == poller ]]; then
+  [[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ && "${GITHUB_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]] ||
+    die 'poller tuple is missing'
+  [[ "${PLANE_TRIGGER_ID:-}" == "$RELEASE_SHA:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" ]] ||
+    die 'poller trigger identity mismatch'
+  runtime_labels+=(
+    --label "com.plane-game.github-run-id=$GITHUB_RUN_ID"
+    --label "com.plane-game.github-run-attempt=$GITHUB_RUN_ATTEMPT"
+    --label "com.plane-game.trigger-id=$PLANE_TRIGGER_ID"
+  )
+fi
 
 preflight_readonly
 if "$dry_run"; then
@@ -242,6 +254,7 @@ fi
 if ! candidate_id=$(docker run -d --name "$container" --network plane-game_default --restart unless-stopped \
   --label "com.plane-game.release-sha=$RELEASE_SHA" --label "com.plane-game.image-digest=$IMAGE_DIGEST" \
   --label "com.plane-game.deployment-id=$deployment_id" \
+  "${runtime_labels[@]}" \
   "$(image_ref)"); then
   cleanup_failure 'candidate container failed to start'
 fi

@@ -24,10 +24,12 @@ function parametersFrom(actions) {
 
 function hasCandidateIdentity(actions, record) {
   const expected = new Map([
-    ['CANDIDATE_SHA', record.candidate_sha],
-    ['ACTIONS_RUN_ID', record.run_id],
-    ['ACTIONS_RUN_ATTEMPT', record.run_attempt],
-    ['WEBHOOK_DELIVERY', record.delivery_id],
+    ['TRIGGER_SOURCE', 'webhook'],
+    ['GITHUB_SHA', record.candidate_sha],
+    ['GITHUB_RUN_ID', record.run_id],
+    ['GITHUB_RUN_ATTEMPT', record.run_attempt],
+    ['TRIGGER_ID', `webhook:${record.delivery_id}`],
+    ['WEBHOOK_DELIVERY_UUID', record.delivery_id],
   ]);
   const parameters = parametersFrom(actions);
   return [...expected].every(([name, value]) => {
@@ -188,10 +190,12 @@ export class JenkinsEnqueuer {
 
   async enqueue(candidate) {
     const query = new URLSearchParams({
-      CANDIDATE_SHA: candidate.candidateSha,
-      ACTIONS_RUN_ID: candidate.runId,
-      ACTIONS_RUN_ATTEMPT: candidate.runAttempt,
-      WEBHOOK_DELIVERY: candidate.deliveryId,
+      TRIGGER_SOURCE: 'webhook',
+      GITHUB_SHA: candidate.candidateSha,
+      GITHUB_RUN_ID: candidate.runId,
+      GITHUB_RUN_ATTEMPT: candidate.runAttempt,
+      TRIGGER_ID: `webhook:${candidate.deliveryId}`,
+      WEBHOOK_DELIVERY_UUID: candidate.deliveryId,
     });
     const result = await this.request(`${JOB_PATH}/buildWithParameters?${query}`, { method: 'POST' });
     const location = result.headers.get('location');
@@ -246,6 +250,7 @@ export function createGateway({ admission }) {
 }
 
 function main() {
+  if (process.env.CD_TRIGGER_MODE !== 'webhook') throw new Error('Webhook trigger mode is not exclusively enabled');
   const store = new DeliveryStore(required('WEBHOOK_STATE_DB'));
   const admission = new WebhookAdmission({
     webhookSecretProvider: new FileSecretProvider(required('WEBHOOK_SECRET_FILE')),

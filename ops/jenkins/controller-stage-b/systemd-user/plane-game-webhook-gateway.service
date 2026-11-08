@@ -12,6 +12,7 @@ RuntimeDirectory=plane-game-webhook
 RuntimeDirectoryMode=0700
 UMask=0077
 Environment=DOCKER_HOST=unix:///run/user/1003/docker.sock
+Environment=CD_TRIGGER_MODE=disabled
 Environment=WEBHOOK_LISTEN_HOST=127.0.0.1
 Environment=WEBHOOK_LISTEN_PORT=9080
 Environment=WEBHOOK_STATE_DB=%h/.local/state/plane-game-webhook/deliveries.sqlite

@@ -82,6 +82,15 @@ if (gateway?.getProperty(HudsonPrivateSecurityRealm.Details.class) == null) {
   gateway.setFullName('PlaneGame Webhook Gateway')
   gateway.save()
 }
+def pollerId = 'plane-actions-poller'
+def poller = User.getById(pollerId, false)
+if (poller?.getProperty(HudsonPrivateSecurityRealm.Details.class) == null) {
+  def randomPassword = new BigInteger(320, new SecureRandom()).toString(36)
+  poller = realm.createAccount(pollerId, randomPassword)
+  poller.setFullName('PlaneGame Private Actions Poller')
+  poller.save()
+}
+
 
 def credentials = SystemCredentialsProvider.getInstance().getCredentials()
 def requireCredential = { String id, Class type, CredentialsScope scope ->
@@ -115,6 +124,7 @@ if (!agentValid) {
 
 def adminAuth = admin.impersonate2()
 def gatewayAuth = gateway.impersonate2()
+def pollerAuth = poller.impersonate2()
 def job = controller.getItemByFullName('plane-game/main-cd')
 // On a fresh home, JCasC Job DSL can persist new items after Jenkins has
 // loaded its in-memory item catalog. Reload once, then validate the live items.
@@ -132,6 +142,13 @@ if (!controller.getACL().hasPermission2(gatewayAuth, Jenkins.READ) ||
     controller.getACL().hasPermission2(gatewayAuth, CredentialsProvider.VIEW)) {
   fail('gateway global authorization is not least privilege')
 }
+if (!controller.getACL().hasPermission2(pollerAuth, Jenkins.READ) ||
+    controller.getACL().hasPermission2(pollerAuth, Jenkins.ADMINISTER) ||
+    controller.getACL().hasPermission2(pollerAuth, Jenkins.RUN_SCRIPTS) ||
+    controller.getACL().hasPermission2(pollerAuth, CredentialsProvider.VIEW)) {
+  fail('poller global authorization is not least privilege')
+}
+
 def jobFolder = controller.getItem('plane-game')
 if (jobFolder == null || !jobFolder.getACL().hasPermission2(gatewayAuth, Item.READ) ||
     jobFolder.getACL().hasPermission2(gatewayAuth, Item.CONFIGURE) ||
@@ -141,6 +158,15 @@ if (jobFolder == null || !jobFolder.getACL().hasPermission2(gatewayAuth, Item.RE
     job.getACL().hasPermission2(gatewayAuth, Item.CONFIGURE) ||
     job.getACL().hasPermission2(gatewayAuth, Item.DELETE)) {
   fail('gateway job authorization or disabled state is invalid')
+}
+if (jobFolder == null || !jobFolder.getACL().hasPermission2(pollerAuth, Item.READ) ||
+    jobFolder.getACL().hasPermission2(pollerAuth, Item.CONFIGURE) ||
+    job == null || !job.isDisabled() ||
+    !job.getACL().hasPermission2(pollerAuth, Item.READ) ||
+    !job.getACL().hasPermission2(pollerAuth, Item.BUILD) ||
+    job.getACL().hasPermission2(pollerAuth, Item.CONFIGURE) ||
+    job.getACL().hasPermission2(pollerAuth, Item.DELETE)) {
+  fail('poller job authorization or disabled state is invalid')
 }
 
 def readyTemp = home.resolve('.stage-b-ready.tmp')

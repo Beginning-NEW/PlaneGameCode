@@ -2,6 +2,11 @@
   "schema": 1,
   "stage": "B",
   "defaultState": "disabled",
+  "triggerSelector": {
+    "default": "disabled",
+    "allowed": ["disabled", "poller", "webhook"],
+    "simultaneousPathsAllowed": false
+  },
   "controller": {
     "core": "2.580.2",
     "java": "21",
@@ -54,6 +59,19 @@
     "principal": "plane-webhook-gateway",
     "globalPermissions": ["Overall/Read"],
     "jobPermissions": ["Job/Read", "Job/Build"]
+  },
+  "poller": {
+    "serviceScope": "user",
+    "defaultState": "disabled",
+    "interval": "5m",
+    "githubOrigins": ["https://api.github.com", "https://ghcr.io"],
+    "jenkinsUrl": "http://127.0.0.1:18080",
+    "principal": "plane-actions-poller",
+    "globalPermissions": ["Overall/Read"],
+    "jobPermissions": ["Job/Read", "Job/Build"],
+    "requestCeilingPerRollingHour": 30,
+    "candidateCeilingPerRollingHour": 1,
+    "candidateGraphRequests": 16
   },
   "bootstrap": {
     "adminPrincipal": "plane-admin",

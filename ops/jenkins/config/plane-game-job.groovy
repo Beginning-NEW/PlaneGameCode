@@ -1,21 +1,21 @@
-// Auditable seed-job input. The generated job stays disabled until the separate
+// Auditable seed-job input. Every trigger path remains disabled until the
 // Operations, security, QA, and CTO enablement gates are all approved.
 pipelineJob('plane-game/main-cd') {
-  description('Main-only CD queued only by the durable workflow_run admission gateway.')
+  description('Main-only CD with mutually exclusive durable poller or webhook admission.')
   disabled(true)
   parameters {
-    stringParam('CANDIDATE_SHA', '', 'workflow_run.head_sha; treated as untrusted until API verification')
-    stringParam('ACTIONS_RUN_ID', '', 'workflow_run.id; identity only, never release ordering')
-    stringParam('ACTIONS_RUN_ATTEMPT', '', 'workflow_run.run_attempt; reruns never supersede an active run_number')
-    stringParam('WEBHOOK_DELIVERY', '', 'Validated X-GitHub-Delivery UUID; durable admission identity')
+    stringParam('TRIGGER_SOURCE', '', 'poller or webhook; must match the reviewed global selector')
+    stringParam('GITHUB_SHA', '', 'Exact successful main push SHA')
+    stringParam('GITHUB_RUN_ID', '', 'Exact Actions run id')
+    stringParam('GITHUB_RUN_ATTEMPT', '', 'Exact Actions run attempt')
+    stringParam('TRIGGER_ID', '', 'Immutable trigger identity')
+    stringParam('WEBHOOK_DELIVERY_UUID', '', 'Webhook-only UUID; empty in poller mode')
   }
   definition {
     cpsScm {
       scm {
         git {
-          remote {
-            url('https://github.com/Beginning-NEW/PlaneGameCode.git')
-          }
+          remote { url('https://github.com/Beginning-NEW/PlaneGameCode.git') }
           branch('*/main')
           extensions { cloneOptions { noTags(true); shallow(false) } }
         }
