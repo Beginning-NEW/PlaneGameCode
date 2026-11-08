@@ -112,7 +112,11 @@ test('same-host executor and resource stop gates match the operations budget', (
   assert.match(docs, /`MemAvailable < 2 GiB`.*5 分钟/);
   assert.match(docs, /任何一次 `< 1[.]5 GiB`/);
   assert.match(docs, /根盘可用 `< 30 GiB`/);
-  assert.match(docs, /2[.]9 GiB 低于入场线/);
+  assert.match(docs, /本节定义资源入场线，不陈述当前目标主机状态/);
+  assert.match(docs, /Operations.*当次连续 24 小时证据/);
+  assert.match(docs, /历史容量快照不得作为当前 Go\/No-Go 结论/);
+  assert.match(docs, /artifact.*非权威输出/);
+  assert.match(docs, /Jenkins 不枚举、下载或解析该 artifact/);
 });
 
 test('Actions gives PR checks no CD secret path and main is the only image publisher', () => {
