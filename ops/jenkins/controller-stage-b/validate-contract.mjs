@@ -29,6 +29,12 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
       manifest.poller?.credentialFile !== '~/.local/state/plane-game-poller/jenkins-api-token') {
     throw new Error('poller budget/default contract changed');
   }
+  const remoting = manifest.agent?.remoting;
+  const remotingPrefix = "exec systemd-run --user --scope --quiet -p MemoryMax=384M -p CPUQuota=25% /bin/sh -c '";
+  if (remoting?.prefixStartSlaveCmd !== remotingPrefix || remoting?.suffixStartSlaveCmd !== "'" ||
+      remoting?.memoryMax !== '384M' || remoting?.cpuQuota !== '25%') {
+    throw new Error('SSH remoting runtime manifest changed');
+  }
   if (controller.hostBinding !== '127.0.0.1:18080:8080') throw new Error('controller must be loopback-only on 18080');
   if (controller.forbiddenHostPorts.join(',') !== '8080,50000') throw new Error('forbidden port contract changed');
   if (controller.executors !== 0 || controller.inboundAgentPort !== -1) throw new Error('controller executor or agent port changed');
@@ -60,8 +66,10 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(casc, /remoteFS: "\/home\/plane-preflight\//, 'agent remote root is not bounded');
   requireMatch(casc, /numExecutors: 1/, 'agent must have one executor');
   requireMatch(casc, /mode: EXCLUSIVE/, 'agent must be matching-label-only');
-  requireMatch(casc, /prefixStartSlaveCmd: "exec systemd-run --user --scope --quiet -p MemoryMax=384M -p CPUQuota=25% \/bin\/sh -c '"/, 'SSH remoting scope must have the reviewed memory and CPU limits');
-  requireMatch(casc, /suffixStartSlaveCmd: "'"/, 'SSH remoting scope must close the command');
+  if (!casc.includes(`prefixStartSlaveCmd: "${remotingPrefix}"`) ||
+      !casc.includes(`suffixStartSlaveCmd: "${remoting.suffixStartSlaveCmd}"`)) {
+    throw new Error('SSH remoting JCasC differs from the runtime manifest');
+  }
   requireMatch(casc, /scope: SYSTEM/, 'agent credential must be SYSTEM scoped');
   requireMatch(casc, /privateKeySource:\s*directEntry:/, 'JCasC SSH private-key source must use directEntry');
   requireMatch(casc, /manuallyProvidedKeyVerificationStrategy:/, 'fixed host-key verifier missing');
@@ -71,6 +79,10 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(init, /getSshHostKeyVerificationStrategy\(\)/, 'SSH launcher readiness check uses an obsolete getter');
   requireMatch(init, /getPrefixStartSlaveCmd\(\)/, 'SSH launcher readiness must verify the bounded command');
   requireMatch(init, /getSuffixStartSlaveCmd\(\)/, 'SSH launcher readiness must verify the bounded command');
+  if (!init.includes(`launcher.getPrefixStartSlaveCmd() == "${remotingPrefix}"`) ||
+      !init.includes(`launcher.getSuffixStartSlaveCmd() == "${remoting.suffixStartSlaveCmd}"`)) {
+    throw new Error('live SSH launcher readiness differs from the runtime manifest');
+  }
   requireMatch(casc, /PLANE_AGENT_ED25519_HOST_KEY/, 'Ed25519 host-key file reference missing');
   for (const source of [
     'PLANE_AGENT_HOST',

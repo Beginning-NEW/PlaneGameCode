@@ -70,4 +70,16 @@ bash ops/jenkins/controller-stage-b/manage-actions-poller.sh verify-restart
 
 `prepare-restart` durably records the kernel boot ID in the owner-only poller state directory. `verify-restart` fails until the boot ID changes, user linger remains enabled, the timer is still persistently enabled and active, the poller drop-in is effective, the timer has fired during the new boot, and the resulting oneshot service reports `Result=success` with exit status 0. It then writes the before/after boot IDs and non-secret systemd result fields to `activation-restart-proof`. Operations must retain that file's metadata/content as restart evidence. No implementation or CI run substitutes for this target-host proof, and no GO may be issued without it.
 
+## Persistent poller deactivation gate
+
+Rollback order is job -> poller -> gateway -> controller. After the Jenkins job is disabled and acknowledged, `disable-stage-b.sh` calls the same manager's fail-closed deactivation path before it stops the gateway or controller:
+
+```sh
+bash ops/jenkins/controller-stage-b/manage-actions-poller.sh deactivate
+# Reboot through the separately approved Operations procedure.
+bash ops/jenkins/controller-stage-b/manage-actions-poller.sh verify-disabled-restart
+```
+
+`deactivate` is idempotent and does not depend on a complete activation ledger. It restores the reviewed default-disabled service/timer files, stops both units, removes persistent timer enablement and the `CD_TRIGGER_MODE=poller` drop-in, reloads the user manager, and fails unless systemd reports the timer disabled/inactive, the service static/inactive, and exactly one effective `CD_TRIGGER_MODE=disabled`. Only then does it durably record the current boot ID. `verify-disabled-restart` requires a changed boot ID and repeats every disabled/inactive/selector proof before writing `deactivation-restart-proof`. A rollback is not post-reboot complete without that proof.
+
 The self-owned ledger detects accidental corruption and other-UID/path attacks. Malicious replay of an earlier internally consistent journal/snapshot by the same service UID remains explicitly out of scope; preventing it requires a separately trusted root-owned or remote monotonic anchor.

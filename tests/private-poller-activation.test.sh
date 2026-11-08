@@ -85,10 +85,42 @@ case "$command" in
     grep -Fxq 'WantedBy=timers.target' "$unit_dir/$timer"
     mkdir -p "$unit_dir/timers.target.wants"
     ln -sfn "../$timer" "$wants"
+    touch "$FAKE_SYSTEMD_STATE/timer-active"
+    ;;
+  disable)
+    for unit in "$@"; do
+      case "$unit" in
+        --now) ;;
+        "$timer")
+          rm -f "$wants" "$FAKE_SYSTEMD_STATE/timer-active"
+          ;;
+        "$service") rm -f "$FAKE_SYSTEMD_STATE/service-active" ;;
+        *) exit 2 ;;
+      esac
+    done
+    ;;
+  stop)
+    for unit in "$@"; do
+      case "$unit" in
+        "$timer") rm -f "$FAKE_SYSTEMD_STATE/timer-active" ;;
+        "$service") rm -f "$FAKE_SYSTEMD_STATE/service-active" ;;
+        *) exit 2 ;;
+      esac
+    done
     ;;
   is-enabled)
-    [[ "$1" == "$timer" && -L "$wants" ]] || exit 1
-    printf 'enabled\n'
+    case "$1" in
+      "$timer")
+        if [[ -L "$wants" ]]; then
+          printf 'enabled\n'
+        else
+          printf 'disabled\n'
+          exit 1
+        fi
+        ;;
+      "$service") printf 'static\n' ;;
+      *) exit 2 ;;
+    esac
     ;;
   is-active)
     quiet=false
@@ -101,10 +133,22 @@ case "$command" in
         $quiet || printf 'inactive\n'
         exit 3
       fi
-    elif [[ "$1" == "$timer" && -L "$wants" ]]; then
-      $quiet || printf 'active\n'
+    elif [[ "$1" == "$timer" ]]; then
+      if [[ -e "$FAKE_SYSTEMD_STATE/timer-active" ]]; then
+        $quiet || printf 'active\n'
+      else
+        $quiet || printf 'inactive\n'
+        exit 3
+      fi
+    elif [[ "$1" == "$service" ]]; then
+      if [[ -e "$FAKE_SYSTEMD_STATE/service-active" ]]; then
+        $quiet || printf 'active\n'
+      else
+        $quiet || printf 'inactive\n'
+        exit 3
+      fi
     else
-      exit 3
+      exit 2
     fi
     ;;
   show)
@@ -181,4 +225,51 @@ grep -Fxq "after_boot_id=$boot_two" "$state_dir/activation-restart-proof"
 grep -Fxq 'timer_enabled=enabled' "$state_dir/activation-restart-proof"
 grep -Fxq 'service_result=success' "$state_dir/activation-restart-proof"
 
-printf 'private poller persistent activation test: PASS\n'
+# A normal deactivation stops an in-flight service, removes the poller selector,
+# disables the persistent timer, and is safe to repeat.
+touch "$fake_state/service-active"
+run_manager deactivate >/dev/null
+test ! -e "$home/.config/systemd/user/timers.target.wants/plane-game-actions-poller.timer"
+test ! -e "$home/.config/systemd/user/plane-game-actions-poller.service.d/10-trigger-mode.conf"
+test ! -e "$fake_state/timer-active"
+test ! -e "$fake_state/service-active"
+grep -Fxq "before_boot_id=$boot_two" "$state_dir/deactivation-restart-proof"
+grep -Fxq 'selector=disabled' "$state_dir/deactivation-restart-proof"
+run_manager deactivate >/dev/null
+if run_manager verify-disabled-restart >/dev/null 2>&1; then
+  printf 'disabled restart verification unexpectedly accepted the same boot ID\n' >&2
+  exit 1
+fi
+
+boot_three=33333333-3333-4333-8333-333333333333
+printf '%s\n' "$boot_three" >"$fake_state/boot-id"
+run_manager verify-disabled-restart >/dev/null
+grep -Fxq "after_boot_id=$boot_three" "$state_dir/deactivation-restart-proof"
+grep -Fxq 'timer_enabled=disabled' "$state_dir/deactivation-restart-proof"
+grep -Fxq 'service_active=inactive' "$state_dir/deactivation-restart-proof"
+
+# A partial activation may leave only a mode drop-in, dangling timer enablement,
+# and active-state evidence. Deactivation restores the reviewed disabled units
+# without depending on the activation ledger or credential files.
+rm -rf "$state_dir"
+rm -f "$home/.config/systemd/user/plane-game-actions-poller.service" \
+  "$home/.config/systemd/user/plane-game-actions-poller.timer"
+mkdir -p "$home/.config/systemd/user/plane-game-actions-poller.service.d" \
+  "$home/.config/systemd/user/timers.target.wants"
+cp "$profile/systemd-user-activation/plane-game-actions-poller.service.d/10-trigger-mode.conf" \
+  "$home/.config/systemd/user/plane-game-actions-poller.service.d/10-trigger-mode.conf"
+ln -sfn ../plane-game-actions-poller.timer \
+  "$home/.config/systemd/user/timers.target.wants/plane-game-actions-poller.timer"
+touch "$fake_state/timer-active" "$fake_state/service-active"
+run_manager deactivate >/dev/null
+grep -Fxq 'Environment=CD_TRIGGER_MODE=disabled' \
+  "$home/.config/systemd/user/plane-game-actions-poller.service"
+test ! -e "$home/.config/systemd/user/plane-game-actions-poller.service.d/10-trigger-mode.conf"
+test ! -e "$home/.config/systemd/user/timers.target.wants/plane-game-actions-poller.timer"
+
+boot_four=44444444-4444-4444-8444-444444444444
+printf '%s\n' "$boot_four" >"$fake_state/boot-id"
+run_manager verify-disabled-restart >/dev/null
+grep -Fxq "after_boot_id=$boot_four" "$state_dir/deactivation-restart-proof"
+
+printf 'private poller persistent activation and deactivation test: PASS\n'

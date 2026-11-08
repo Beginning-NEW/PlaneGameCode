@@ -12,17 +12,19 @@ fail() {
   exit 1
 }
 
-[[ $# -eq 1 ]] || fail 'usage: manage-actions-poller.sh activate|prepare-restart|verify-restart'
+usage='usage: manage-actions-poller.sh activate|deactivate|prepare-restart|verify-restart|verify-disabled-restart'
+[[ $# -eq 1 ]] || fail "$usage"
 action=$1
 case "$action" in
-  activate|prepare-restart|verify-restart) ;;
-  *) fail 'usage: manage-actions-poller.sh activate|prepare-restart|verify-restart' ;;
+  activate|deactivate|prepare-restart|verify-restart|verify-disabled-restart) ;;
+  *) fail "$usage" ;;
 esac
 
 state_dir=$HOME/.local/state/plane-game-poller
 unit_dir=${XDG_CONFIG_HOME:-"$HOME/.config"}/systemd/user
 dropin_dir=$unit_dir/plane-game-actions-poller.service.d
 proof_file=$state_dir/activation-restart-proof
+disabled_proof_file=$state_dir/deactivation-restart-proof
 service_name=plane-game-actions-poller.service
 timer_name=plane-game-actions-poller.timer
 webhook_name=plane-game-webhook-gateway.service
@@ -38,12 +40,16 @@ require_regular_owner_mode() {
     fail "$label owner/mode/link-count must be $PLANE_PREFLIGHT_UID/$expected_mode/1"
 }
 
-require_identity_and_state() {
+require_identity() {
   local repo_root actual
   [[ "$(id -u)" == "$PLANE_PREFLIGHT_UID" && "$(id -un)" == "$PLANE_PREFLIGHT_USER" ]] ||
     fail "must run as $PLANE_PREFLIGHT_USER UID $PLANE_PREFLIGHT_UID"
   repo_root=$(cd -- "$profile_dir/../../.." && pwd -P)
   [[ "$repo_root" == "$HOME/plane-game-cd" ]] || fail 'package must be the real $HOME/plane-game-cd checkout'
+}
+
+require_activation_state() {
+  local actual
   [[ -d "$state_dir" && ! -L "$state_dir" ]] || fail 'state directory must be a real directory'
   actual=$(stat -c '%u %a' -- "$state_dir") || fail 'cannot inspect state directory'
   [[ "$actual" == "$PLANE_PREFLIGHT_UID 700" ]] ||
@@ -52,6 +58,20 @@ require_identity_and_state() {
   require_regular_owner_mode "$state_dir/snapshot.json" 600 snapshot
   require_regular_owner_mode "$state_dir/.shared.lock" 600 shared-lock
   require_regular_owner_mode "$state_dir/jenkins-api-token" 600 jenkins-credential
+}
+
+ensure_state_directory() {
+  local parent mode
+  for parent in "$HOME/.local" "$HOME/.local/state" "$state_dir"; do
+    [[ ! -L "$parent" ]] || fail "state path must not be a symlink: $parent"
+    mkdir -p -- "$parent"
+    [[ -d "$parent" && ! -L "$parent" ]] || fail "state path is not a real directory: $parent"
+    [[ "$(stat -c '%u' -- "$parent")" == "$PLANE_PREFLIGHT_UID" ]] ||
+      fail "state path is not owned by UID $PLANE_PREFLIGHT_UID: $parent"
+    mode=$(stat -c '%a' -- "$parent") || fail "cannot inspect state directory mode: $parent"
+    (( (8#$mode & 8#022) == 0 )) || fail "state path is group/world writable: $parent"
+  done
+  chmod 0700 "$state_dir"
 }
 
 require_linger() {
@@ -88,6 +108,22 @@ effective_mode() {
     fail 'effective service mode must be exactly one CD_TRIGGER_MODE=poller assignment'
 }
 
+effective_disabled_mode() {
+  local environment entry count=0 value=''
+  environment=$(systemctl --user show "$service_name" --property=Environment --value 2>/dev/null) ||
+    fail 'cannot inspect the effective poller environment while disabling'
+  for entry in $environment; do
+    case "$entry" in
+      CD_TRIGGER_MODE=*)
+        count=$((count + 1))
+        value=${entry#CD_TRIGGER_MODE=}
+        ;;
+    esac
+  done
+  [[ "$count" == 1 && "$value" == disabled ]] ||
+    fail 'effective service mode must be exactly one CD_TRIGGER_MODE=disabled assignment'
+}
+
 require_persistent_active_timer() {
   local enabled active
   enabled=$(systemctl --user is-enabled "$timer_name" 2>/dev/null) || fail 'poller timer is not enabled'
@@ -95,6 +131,32 @@ require_persistent_active_timer() {
   active=$(systemctl --user is-active "$timer_name" 2>/dev/null) || fail 'poller timer is not active'
   [[ "$active" == active ]] || fail 'poller timer is not active'
   effective_mode
+}
+
+require_persistent_disabled_poller() {
+  local timer_enabled timer_enabled_status service_enabled service_enabled_status
+  local timer_active timer_active_status service_active service_active_status
+  set +e
+  timer_enabled=$(systemctl --user is-enabled "$timer_name" 2>/dev/null)
+  timer_enabled_status=$?
+  service_enabled=$(systemctl --user is-enabled "$service_name" 2>/dev/null)
+  service_enabled_status=$?
+  timer_active=$(systemctl --user is-active "$timer_name" 2>/dev/null)
+  timer_active_status=$?
+  service_active=$(systemctl --user is-active "$service_name" 2>/dev/null)
+  service_active_status=$?
+  set -e
+  [[ "$timer_enabled_status" -ne 0 && "$timer_enabled" == disabled ]] ||
+    fail 'poller timer must be persistently disabled'
+  [[ "$service_enabled_status" -eq 0 && "$service_enabled" == static ]] ||
+    fail 'poller service must remain static and not independently enableable'
+  [[ "$timer_active_status" -ne 0 && "$timer_active" == inactive ]] ||
+    fail 'poller timer must be inactive'
+  [[ "$service_active_status" -ne 0 && "$service_active" == inactive ]] ||
+    fail 'poller service must be inactive'
+  [[ ! -e "$dropin_dir/10-trigger-mode.conf" && ! -L "$dropin_dir/10-trigger-mode.conf" ]] ||
+    fail 'poller mode drop-in remains installed'
+  effective_disabled_mode
 }
 
 ensure_unit_directory() {
@@ -120,6 +182,13 @@ atomic_install() {
   install -m 0600 -- "$source" "$temporary"
   sync -f "$temporary"
   mv -f -- "$temporary" "$destination"
+  sync -f "$(dirname -- "$destination")"
+}
+
+atomic_remove() {
+  local destination=$1
+  [[ ! -d "$destination" ]] || fail "refusing to remove a directory where a unit file is expected: $destination"
+  rm -f -- "$destination"
   sync -f "$(dirname -- "$destination")"
 }
 
@@ -167,12 +236,49 @@ write_verified_proof() {
   sync -f "$state_dir"
 }
 
-require_identity_and_state
-require_linger
-require_webhook_inactive
+write_disabled_pre_restart_proof() {
+  local boot_id=$1 temporary now
+  now=$(date -u +%s)
+  temporary=$(mktemp "$state_dir/.deactivation-restart-proof.XXXXXX")
+  printf 'version=1\nbefore_boot_id=%s\ndeactivated_at_epoch=%s\n' "$boot_id" "$now" >"$temporary"
+  printf 'timer_enabled=disabled\ntimer_active=inactive\nservice_enabled=static\nservice_active=inactive\nselector=disabled\n' >>"$temporary"
+  chmod 0600 "$temporary"
+  sync -f "$temporary"
+  mv -f -- "$temporary" "$disabled_proof_file"
+  sync -f "$state_dir"
+}
+
+read_disabled_before_boot_id() {
+  local before count
+  require_regular_owner_mode "$disabled_proof_file" 600 disabled-restart-proof
+  count=$(awk -F= '$1 == "before_boot_id" { count += 1 } END { print count + 0 }' "$disabled_proof_file")
+  [[ "$count" == 1 ]] || fail 'disabled restart proof must contain exactly one before_boot_id'
+  before=$(awk -F= '$1 == "before_boot_id" { print $2 }' "$disabled_proof_file")
+  [[ "$before" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    fail 'stored disabled boot ID is malformed'
+  printf '%s' "$before"
+}
+
+write_disabled_verified_proof() {
+  local before=$1 after=$2 temporary now
+  now=$(date -u +%s)
+  temporary=$(mktemp "$state_dir/.deactivation-restart-proof.XXXXXX")
+  printf 'version=1\nbefore_boot_id=%s\nafter_boot_id=%s\nverified_at_epoch=%s\n' \
+    "$before" "$after" "$now" >"$temporary"
+  printf 'timer_enabled=disabled\ntimer_active=inactive\nservice_enabled=static\nservice_active=inactive\nselector=disabled\n' >>"$temporary"
+  chmod 0600 "$temporary"
+  sync -f "$temporary"
+  mv -f -- "$temporary" "$disabled_proof_file"
+  sync -f "$state_dir"
+}
+
+require_identity
 
 case "$action" in
   activate)
+    require_activation_state
+    require_linger
+    require_webhook_inactive
     ensure_unit_directory
     atomic_install "$service_source" "$unit_dir/$service_name"
     atomic_install "$timer_source" "$unit_dir/$timer_name"
@@ -183,12 +289,33 @@ case "$action" in
     require_persistent_active_timer
     printf 'actions poller timer persistently enabled; restart proof is still required before GO\n'
     ;;
+  deactivate)
+    ensure_state_directory
+    ensure_unit_directory
+    atomic_install "$service_source" "$unit_dir/$service_name"
+    atomic_install "$timer_source" "$unit_dir/$timer_name"
+    systemctl --user stop "$timer_name" "$service_name" >/dev/null 2>&1 || true
+    systemctl --user disable "$timer_name" "$service_name" >/dev/null 2>&1 || true
+    atomic_remove "$dropin_dir/10-trigger-mode.conf"
+    systemctl --user daemon-reload
+    systemctl --user stop "$timer_name" "$service_name" >/dev/null 2>&1 || true
+    systemctl --user disable "$timer_name" "$service_name" >/dev/null 2>&1 || true
+    require_persistent_disabled_poller
+    write_disabled_pre_restart_proof "$(read_boot_id)"
+    printf 'actions poller persistently disabled and inactive; reboot, then run verify-disabled-restart\n'
+    ;;
   prepare-restart)
+    require_activation_state
+    require_linger
+    require_webhook_inactive
     require_persistent_active_timer
     write_pre_restart_proof "$(read_boot_id)"
     printf 'pre-restart boot ID recorded; reboot, wait for the five-minute timer, then run verify-restart\n'
     ;;
   verify-restart)
+    require_activation_state
+    require_linger
+    require_webhook_inactive
     before_boot_id=$(read_before_boot_id)
     after_boot_id=$(read_boot_id)
     [[ "$after_boot_id" != "$before_boot_id" ]] || fail 'host boot ID did not change; a restart is not proven'
@@ -204,5 +331,14 @@ case "$action" in
       fail 'post-restart timer invocation did not complete successfully'
     write_verified_proof "$before_boot_id" "$after_boot_id" "$last_trigger" "$service_result" "$service_status"
     printf 'actions poller persistent activation verified after host restart\n'
+    ;;
+  verify-disabled-restart)
+    ensure_state_directory
+    before_boot_id=$(read_disabled_before_boot_id)
+    after_boot_id=$(read_boot_id)
+    [[ "$after_boot_id" != "$before_boot_id" ]] || fail 'host boot ID did not change; a disabled restart is not proven'
+    require_persistent_disabled_poller
+    write_disabled_verified_proof "$before_boot_id" "$after_boot_id"
+    printf 'actions poller persistent deactivation verified after host restart\n'
     ;;
 esac

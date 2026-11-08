@@ -143,6 +143,12 @@ test('controller runtime is loopback-only, hardened, persistent, and bounded to 
 });
 
 test('SSH agent and gateway use fixed identity, file references, and disabled defaults', () => {
+  assert.deepEqual(runtime.agent.remoting, {
+    prefixStartSlaveCmd: "exec systemd-run --user --scope --quiet -p MemoryMax=384M -p CPUQuota=25% /bin/sh -c '",
+    suffixStartSlaveCmd: "'",
+    memoryMax: '384M',
+    cpuQuota: '25%',
+  });
   assert.match(casc, /name: "plane-game-cd-rootless"/);
   assert.match(casc, /remoteFS: "\/home\/plane-preflight\/jenkins-agent"/);
   assert.match(casc, /numExecutors: 1/);
@@ -161,7 +167,8 @@ test('SSH agent and gateway use fixed identity, file references, and disabled de
   assert.match(gateway, /Restart=no/);
   assert.match(gateway, /DOCKER_HOST=unix:\/\/\/run\/user\/1003\/docker[.]sock/);
   assert.match(gateway, /JENKINS_URL=http:\/\/127[.]0[.]0[.]1:18080/);
-  assert.match(rollback, /job -> gateway -> controller/);
+  assert.match(rollback, /job -> poller -> gateway -> controller/);
+  assert.match(rollback, /verify-disabled-restart/);
   assert.match(rollback, /first-release/);
   assert.match(rollback, /last-healthy/);
   assert.match(rollback, /checksum/);
@@ -186,7 +193,11 @@ test('negative contract rejects exposure, root units, executors, enabled jobs, b
   assert.throws(check({ job: job.replace('disabled(true)', 'disabled(false)') }), /default disabled/);
   assert.throws(check({ gateway: `${gateway}\n[Install]\nWantedBy=default.target\n` }), /root-level or enableable/);
   assert.throws(check({ casc: casc.replace('manuallyProvidedKeyVerificationStrategy', 'nonVerifyingKeyVerificationStrategy') }), /host-key/);
-  assert.throws(check({ casc: casc.replace('CPUQuota=25%', 'CPUQuota=50%') }), /SSH remoting scope/);
+  assert.throws(check({ casc: casc.replace('CPUQuota=25%', 'CPUQuota=50%') }), /SSH remoting JCasC/);
+  assert.throws(check({ runtime: {
+    ...runtime,
+    agent: { ...runtime.agent, remoting: { ...runtime.agent.remoting, memoryMax: '512M' } },
+  } }), /SSH remoting runtime manifest/);
   assert.throws(check({ casc: `${casc}\n-----BEGIN PRIVATE KEY-----\n` }), /plaintext credential/);
   assert.throws(check({ scripts: `${scripts}\ndocker system prune\n` }), /broad or rootful/);
 });

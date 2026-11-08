@@ -32,6 +32,7 @@ request() {
   shift 3
   local status header_bytes body_bytes
   status=$(
+    ulimit -c 0 || exit 125
     ulimit -f "$CURL_FILE_LIMIT_KIB" || exit 125
     exec curl --silent --show-error --retry 0 --connect-timeout 10 --max-time 30 \
       --proxy '' --noproxy 'ghcr.io' --proto '=https' --max-redirs 0 \

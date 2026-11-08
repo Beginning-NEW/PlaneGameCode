@@ -27,6 +27,8 @@ const gatewayImage = images.match(/^GATEWAY_IMAGE=(.+)$/m)?.[1] ?? '';
 const mockCurl = String.raw`#!/usr/bin/env bash
 set -euo pipefail
 
+printf '%s\n' "$(ulimit -c)" >> "$MOCK_PUBLIC_FIXTURE/curl-core-limits.log"
+
 body=''
 headers=''
 url=''
@@ -213,6 +215,20 @@ function run(script, args, fixture, extraEnv = {}) {
   });
 }
 
+function runWithNonzeroCoreLimit(script, args, fixture) {
+  return spawnSync('bash', [
+    '-c',
+    'ulimit -c 1024; exec bash "$@"',
+    'bounded-ghcr-core',
+    join(repositoryRoot, script),
+    ...args,
+  ], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+    env: fixture.env,
+  });
+}
+
 test('SCM, Actions, and public image proof have no Jenkins credential path', () => {
   assert.match(job, /url\('https:\/\/github[.]com\/Beginning-NEW\/PlaneGameCode[.]git'\)/);
   assert.doesNotMatch(job, /credentials\(/);
@@ -284,9 +300,17 @@ test('production shell fails closed on public API and registry transport, HTTP, 
 test('GHCR succeeds without Content-Length while hostile inherited proxies remain set', { skip: !canRunShellDrills }, async () => {
   const fixture = await createFixture({ mode: 'registry-no-content-length' });
   try {
-    const result = run('ops/jenkins/resolve-public-ghcr-digest.sh', ['Beginning-NEW/PlaneGameCode', sha], fixture);
+    const result = runWithNonzeroCoreLimit(
+      'ops/jenkins/resolve-public-ghcr-digest.sh',
+      ['Beginning-NEW/PlaneGameCode', sha],
+      fixture,
+    );
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), digest);
+    assert.deepEqual(
+      (await readFile(join(fixture.root, 'curl-core-limits.log'), 'utf8')).trim().split('\n'),
+      ['0', '0'],
+    );
   } finally {
     await fixture.cleanup();
   }
