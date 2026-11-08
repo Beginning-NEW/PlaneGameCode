@@ -56,7 +56,7 @@ For a controlled rotation, disable the controller, verify the prior bootstrap fi
 Operations must execute this on a disposable Stage B rehearsal home before readiness is frozen. Do not print, copy, upload, or attach the hash; record only exit states and file metadata.
 
 1. With a fresh bounded home volume and no `admin-bootstrap-bcrypt`, run `run-controller.sh`, wait for the controller to exit, and prove exit `78`, no `.stage-b-ready`, and no listening healthy controller.
-2. Run `generate-admin-bootstrap.sh` interactively, verify owner UID `1003` and mode `0600` without reading the file, then start the same fresh home and prove `healthcheck.sh` succeeds.
+2. Run `generate-admin-bootstrap.sh` interactively, verify owner UID `1003` and initial mode `0600` without reading the file, add only the mapped Jenkins UID `297607:r--` ACL (resulting mode `0640`), then start the same fresh home and prove `healthcheck.sh` succeeds.
 3. Disable the controller, remove exactly `admin-bootstrap-bcrypt`, restart the persisted home, and prove readiness still succeeds.
 4. Disable it again, generate a new hash, start once, and prove readiness succeeds with the rotated password. Disable while deliberately retaining that same file, restart once, and prove exit `78` with no readiness marker; then remove the file and prove the persisted restart succeeds.
 5. Attach only the candidate SHA/tree, image ID, home-volume name, timestamps, exit codes, readiness results, and `stat` owner/mode to the Operations review. Never attach container logs from a password-entry session or any secret value.
@@ -75,7 +75,7 @@ No credential value is committed. JCasC strict secret resolution is enabled; eve
 
 The public repository is checked out by exact anonymous HTTPS URL with no credential ID. Actions proof uses the unauthenticated exact-attempt and main-ref APIs. GHCR and Docker Hub pulls use an empty temporary Docker config, no login, and digest-only image references; no GitHub or registry credential object or host file is permitted.
 
-The approved directory must be owned by UID 1003 with mode `0700` or `0750`. Each file must be a regular non-symlink owned by UID 1003 with mode `0400`, `0440`, `0600`, or `0640`. `run-controller.sh` does not change permissions: it launches the exact image user with the exact read-only mounts under `--network none` and refuses to start unless that user can read every file. Provision a narrow host ACL for the rootless user-namespace mapping when needed; never fall back to world-readable modes. Do not reuse or create `PLANE_GAME_GITHUB_TOKEN`. See `credential-manifest.json` for metadata only.
+The approved directory must be owned by UID 1003 with mode `0750`; each mounted file must be a regular non-symlink owned by UID 1003 with mode `0440` or `0640`. The target rootless mapping gives container Jenkins UID 1000 host UID 297607. Set exactly one named ACL for UID 297607 (`r-x` on the directory, `r--` on each file), with no group or other access. The bcrypt helper first writes mode `0600`; add this narrow ACL before mounting it, yielding mode `0640`. `run-controller.sh` checks the live daemon UID mapping and exact ACL, then proves the image user can read every file under `--network none`; it does not weaken host permissions. Do not reuse or create `PLANE_GAME_GITHUB_TOKEN`. See `credential-manifest.json` for metadata only.
 
 ## Rootless gateway and disabled defaults
 
@@ -96,7 +96,7 @@ bash ops/jenkins/controller-stage-b/manage-gateway-token.sh prune
 bash ops/jenkins/controller-stage-b/manage-gateway-token.sh revoke
 ```
 
-`create` prompts twice, without echo, for the known `plane-admin` password corresponding to the bcrypt bootstrap. `rotate` atomically installs a new token, then revokes every prior gateway token; if revocation is interrupted, `prune` safely completes it using the installed token UUID metadata. `revoke` revokes all gateway tokens and empties the existing target. The separate host-only `webhook-secret` HMAC file is untouched and is not required for a no-webhook controller rehearsal. The gateway remains disabled and loopback-only.
+`create` prompts twice, without echo, for the known `plane-admin` password corresponding to the bcrypt bootstrap. The host-only token file is one mode-`0600` JSON document containing version, token, and UUID. Every helper operation holds a private file lock; `rotate` publishes the complete new document with one fsynced atomic rename, then revokes prior tokens. If revocation is interrupted, `prune` uses the published UUID to complete it; a consumer reads only a complete old or new generation. `revoke` revokes all gateway tokens and atomically empties the existing target. The separate host-only `webhook-secret` HMAC file is untouched and is not required for a no-webhook controller rehearsal. The gateway remains disabled and loopback-only.
 
 ## Offline verification
 

@@ -15,7 +15,6 @@ fail() {
 [[ $# -ge 1 && $# -le 2 ]] || fail 'usage: manage-gateway-token.sh create|rotate|prune|revoke [TOKEN_FILE]'
 operation=$1
 token_file=${2:-"$HOME/.config/plane-game/credentials/jenkins-api-token"}
-uuid_file=$token_file.uuid
 jenkins_url=http://127.0.0.1:18080
 gateway_user=plane-webhook-gateway
 admin_user=plane-admin
@@ -27,6 +26,15 @@ admin_user=plane-admin
 [[ "$(stat -c '%a' -- "$token_file")" == 600 ]] || fail 'token target mode must be 0600'
 [[ "$(stat -c '%u' -- "$(dirname -- "$token_file")")" == "$PLANE_PREFLIGHT_UID" ]] || fail 'token directory owner must be UID 1003'
 [[ "$(stat -c '%a' -- "$(dirname -- "$token_file")")" == 700 ]] || fail 'token directory mode must be 0700'
+lock_file=$token_file.lock
+[[ ! -L "$lock_file" ]] || fail 'token lock must not be a symlink'
+if [[ -e "$lock_file" ]]; then
+  [[ -f "$lock_file" && "$(stat -c '%u %a' -- "$lock_file")" == "$PLANE_PREFLIGHT_UID 600" ]] ||
+    fail 'token lock owner or mode is invalid'
+fi
+exec 9>"$lock_file"
+chmod 600 "$lock_file"
+flock -x 9
 
 runtime_base=${XDG_RUNTIME_DIR:-/run/user/$PLANE_PREFLIGHT_UID}
 [[ -d "$runtime_base" && -w "$runtime_base" ]] || fail 'private runtime directory is unavailable'
@@ -44,10 +52,12 @@ json_field() {
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", chunk => { input += chunk; });
     process.stdin.on("end", () => {
-      const parsed = JSON.parse(input);
-      const value = fieldPath(parsed, process.argv[1].split("."));
-      if (typeof value !== "string" || value.length === 0 || /[\\r\\n]/.test(value)) process.exit(2);
-      process.stdout.write(value);
+      try {
+        const parsed = JSON.parse(input);
+        const value = fieldPath(parsed, process.argv[1].split("."));
+        if (typeof value !== "string" || value.length === 0 || /[\r\n]/.test(value)) process.exit(2);
+        process.stdout.write(value);
+      } catch { process.exit(2); }
     });
     function fieldPath(value, parts) {
       for (const part of parts) value = value?.[part];
@@ -57,16 +67,15 @@ json_field() {
 }
 
 write_current_token() {
-  local token=$1 uuid=$2 token_tmp uuid_tmp
+  local token=$1 uuid=$2 token_tmp
   [[ "$uuid" =~ ^[0-9a-fA-F-]{36}$ ]] || fail 'Jenkins returned an invalid token UUID'
   [[ "$token" =~ ^[0-9a-zA-Z]{16,256}$ ]] || fail 'Jenkins returned an invalid token value'
   token_tmp=$(mktemp "$(dirname -- "$token_file")/.jenkins-api-token.XXXXXX")
-  uuid_tmp=$(mktemp "$(dirname -- "$token_file")/.jenkins-api-token-uuid.XXXXXX")
-  chmod 600 "$token_tmp" "$uuid_tmp"
-  printf '%s\n' "$token" >"$token_tmp"
-  printf '%s\n' "$uuid" >"$uuid_tmp"
+  chmod 600 "$token_tmp"
+  printf '{"version":1,"token":"%s","uuid":"%s"}\n' "$token" "$uuid" >"$token_tmp"
+  sync -f "$token_tmp"
   mv -f -- "$token_tmp" "$token_file"
-  mv -f -- "$uuid_tmp" "$uuid_file"
+  sync -f "$(dirname -- "$token_file")"
 }
 
 write_netrc() {
@@ -85,7 +94,6 @@ gateway_post() {
 
 create_token() {
   [[ ! -s "$token_file" ]] || fail 'create requires the existing token target to be empty'
-  [[ ! -e "$uuid_file" ]] || fail 'create requires no token UUID metadata file'
   printf 'Jenkins will prompt twice for the plane-admin bootstrap password; input is not stored.\n' >&2
   crumb_json=$(curl --fail --silent --show-error \
     --cookie-jar "$scratch/cookies" --user "$admin_user" \
@@ -107,11 +115,14 @@ create_token() {
 
 load_current() {
   [[ -s "$token_file" ]] || fail 'current gateway token file is empty'
-  [[ -f "$uuid_file" && ! -L "$uuid_file" ]] || fail 'current token UUID metadata is missing'
-  [[ "$(stat -c '%u' -- "$uuid_file")" == "$PLANE_PREFLIGHT_UID" ]] || fail 'token UUID metadata owner must be UID 1003'
-  [[ "$(stat -c '%a' -- "$uuid_file")" == 600 ]] || fail 'token UUID metadata mode must be 0600'
-  current_token=$(tr -d '\r\n' <"$token_file")
-  current_uuid=$(tr -d '\r\n' <"$uuid_file")
+  node -e 'let s=""; process.stdin.on("data", c => s += c); process.stdin.on("end", () => {
+    try {
+      const value = JSON.parse(s);
+      if (value.version !== 1 || Object.keys(value).sort().join(",") !== "token,uuid,version") process.exit(2);
+    } catch { process.exit(2); }
+  });' <"$token_file" || fail 'current token document is invalid'
+  current_token=$(json_field token <"$token_file")
+  current_uuid=$(json_field uuid <"$token_file")
   [[ "$current_token" =~ ^[0-9a-zA-Z]{16,256}$ ]] || fail 'current token file format is invalid'
   [[ "$current_uuid" =~ ^[0-9a-fA-F-]{36}$ ]] || fail 'current token UUID metadata is invalid'
   write_netrc "$current_token"
@@ -144,8 +155,11 @@ revoke_tokens() {
   load_current
   gateway_post "/user/$gateway_user/descriptorByName/jenkins.security.ApiTokenProperty/revokeAll" >/dev/null
   unset current_token
-  : >"$token_file"
-  rm -f -- "$uuid_file"
+  empty_tmp=$(mktemp "$(dirname -- "$token_file")/.jenkins-api-token.XXXXXX")
+  chmod 600 "$empty_tmp"
+  sync -f "$empty_tmp"
+  mv -f -- "$empty_tmp" "$token_file"
+  sync -f "$(dirname -- "$token_file")"
   printf 'all gateway tokens were revoked and the host-only token target was emptied\n'
 }
 

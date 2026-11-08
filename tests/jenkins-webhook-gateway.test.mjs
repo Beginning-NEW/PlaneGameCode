@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { JenkinsEnqueuer } from '../ops/jenkins/webhook-gateway.mjs';
+import { JenkinsApiTokenProvider } from '../ops/jenkins/webhook-admission.mjs';
 
 const baseUrl = 'http://jenkins.test';
 const deliveryId = '123e4567-e89b-42d3-a456-426614174000';
@@ -15,6 +19,27 @@ const actions = [{
     { name: 'WEBHOOK_DELIVERY', value: deliveryId },
   ],
 }];
+
+test('gateway token consumer reads one complete atomic generation', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'plane-gateway-token-'));
+  const path = join(directory, 'jenkins-api-token');
+  const uuid = '123e4567-e89b-42d3-a456-426614174000';
+  const first = { version: 1, token: 'ABCDEFGHIJKLMNOP', uuid };
+  const second = { version: 1, token: 'QRSTUVWXYZabcdef', uuid };
+  try {
+    writeFileSync(path, JSON.stringify(first), { mode: 0o600 });
+    const provider = new JenkinsApiTokenProvider(path);
+    assert.equal(provider.get().toString(), first.token);
+    writeFileSync(`${path}.new`, JSON.stringify(second), { mode: 0o600 });
+    renameSync(`${path}.new`, path);
+    assert.equal(provider.get().toString(), second.token);
+    writeFileSync(`${path}.bad`, '{not-json', { mode: 0o600 });
+    renameSync(`${path}.bad`, path);
+    assert.throws(() => provider.get(), (error) => error.code === 'credential_unavailable');
+  } finally {
+    rmSync(directory, { recursive: true });
+  }
+});
 
 function json(payload, status = 200, headers = {}) {
   return new Response(JSON.stringify(payload), {

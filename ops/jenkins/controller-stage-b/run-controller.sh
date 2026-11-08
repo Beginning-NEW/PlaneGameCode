@@ -10,6 +10,14 @@ fail() {
   exit 1
 }
 
+validate_jenkins_acl() {
+  local path=$1 name=$2 owner_access=$3 mapped_access=$4 actual expected
+  actual=$(getfacl -n -c -- "$path" 2>/dev/null) || fail "cannot inspect approved ACL: $name"
+  expected=$(printf 'user::%s\nuser:%s:%s\ngroup::---\nmask::%s\nother::---\n' \
+    "$owner_access" "$JENKINS_MAPPED_HOST_UID" "$mapped_access" "$mapped_access")
+  [[ "$actual" == "$expected" ]] || fail "approved ACL grants another principal or lacks Jenkins mapping: $name"
+}
+
 validate_secret_file() {
   local path=$1 name=$2 mode owner size
   [[ -f "$path" && ! -L "$path" ]] || fail "approved secret must be one regular non-symlink file: $name"
@@ -17,7 +25,12 @@ validate_secret_file() {
   mode=$(stat -c '%a' -- "$path")
   size=$(stat -c '%s' -- "$path")
   [[ "$owner" == "$PLANE_PREFLIGHT_UID" ]] || fail "approved secret owner must be UID $PLANE_PREFLIGHT_UID: $name"
-  [[ "$mode" =~ ^(400|440|600|640)$ ]] || fail "approved secret mode must be 0400/0440/0600/0640: $name"
+  [[ "$mode" =~ ^(440|640)$ ]] || fail "approved secret mode must be 0440/0640 with a narrow Jenkins ACL: $name"
+  if [[ "$mode" == 440 ]]; then
+    validate_jenkins_acl "$path" "$name" 'r--' 'r--'
+  else
+    validate_jenkins_acl "$path" "$name" 'rw-' 'r--'
+  fi
   (( size > 0 && size <= 16384 )) || fail "approved secret is empty or oversized: $name"
 }
 
@@ -33,10 +46,16 @@ approved_dir_input=${2:?usage: run-controller.sh IMAGE_ID_FILE APPROVED_DIR}
 [[ "$(id -u)" == "$PLANE_PREFLIGHT_UID" ]] || fail 'must run as UID 1003'
 [[ "$(id -un)" == "$PLANE_PREFLIGHT_USER" ]] || fail 'must run as plane-preflight'
 [[ "${DOCKER_HOST:-}" == "$ROOTLESS_DOCKER_HOST" ]] || fail 'rootless DOCKER_HOST mismatch'
+mapfile -t daemon_pids < <(pgrep -u "$PLANE_PREFLIGHT_UID" -x dockerd || true)
+[[ "${#daemon_pids[@]}" == 1 ]] || fail 'exactly one UID-1003 rootless Docker daemon is required'
+mapped_uid=$(awk -v target=1000 '$1 <= target && target < $1 + $3 { print $2 + target - $1 }' \
+  "/proc/${daemon_pids[0]}/uid_map")
+[[ "$mapped_uid" == "$JENKINS_MAPPED_HOST_UID" ]] || fail 'rootless Jenkins host UID mapping changed'
 [[ -d "$approved_dir_input" && ! -L "$approved_dir_input" ]] || fail 'approved directory must be a real directory'
 approved_dir=$(cd -- "$approved_dir_input" && pwd -P)
 [[ "$(stat -c '%u' -- "$approved_dir")" == "$PLANE_PREFLIGHT_UID" ]] || fail 'approved directory owner must be UID 1003'
-[[ "$(stat -c '%a' -- "$approved_dir")" =~ ^(700|750)$ ]] || fail 'approved directory mode must be 0700 or 0750'
+[[ "$(stat -c '%a' -- "$approved_dir")" == 750 ]] || fail 'approved directory mode must be 0750 with a narrow Jenkins ACL'
+validate_jenkins_acl "$approved_dir" approved-directory 'rwx' 'r-x'
 
 secret_names=(
   agent-host

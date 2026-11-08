@@ -68,7 +68,8 @@ test('public-source SCM, Actions, and registries require no credential objects o
 
 test('runner validates host metadata and actual rootless image-user readability', () => {
   assert.match(runner, /stat -c '%u'/);
-  assert.match(runner, /400\|440\|600\|640/);
+  assert.match(runner, /440\|640/);
+  assert.match(runner, /getfacl -n -c/);
   assert.match(runner, /--network none/);
   assert.match(runner, /stage-b-secret-preflight/);
   assert.match(runner, /fix the specific host ACL mapping/);

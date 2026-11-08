@@ -92,7 +92,10 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   forbid(scripts, /github-(?:scm|actions)|ghcr-(?:username|token)|PLANE_(?:GITHUB|GHCR)_/,
     'runner must not mount public-source credentials');
   requireMatch(scripts, /stat -c '%u'/, 'secret ownership validation missing');
-  requireMatch(scripts, /400\|440\|600\|640/, 'strict secret mode validation missing');
+  requireMatch(scripts, /440\|640/, 'strict secret mode validation missing');
+  requireMatch(scripts, /getfacl -n -c/, 'narrow mapped-Jenkins ACL validation missing');
+  requireMatch(scripts, /JENKINS_MAPPED_HOST_UID/, 'mapped Jenkins host UID must be checked');
+  requireMatch(scripts, /\/proc\/\$\{daemon_pids\[0\]\}\/uid_map/, 'live rootless user mapping must be checked');
   requireMatch(scripts, /stage-b-secret-preflight/, 'rootless image-user readability proof missing');
   requireMatch(scripts, /PLANE_ADMIN_BOOTSTRAP_BCRYPT/, 'optional bootstrap mount missing');
   requireMatch(scripts, /index [. ]Config[.]Labels "io[.]paperclip[.]plane-game[.]stage"/, 'stopped-container label guard missing');
@@ -116,6 +119,10 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   }
   requireMatch(tokenHelper, /jenkins_url=http:\/\/127[.]0[.]0[.]1:18080/, 'token helper is not fixed loopback-only');
   requireMatch(tokenHelper, /create\|rotate\|prune\|revoke/, 'token lifecycle operations are incomplete');
+  requireMatch(tokenHelper, /flock -x 9/, 'token lifecycle lock is missing');
+  requireMatch(tokenHelper, /sync -f "\$token_tmp"[\s\S]*mv -f -- "\$token_tmp" "\$token_file"/,
+    'token and UUID must be published as one durable file');
+  forbid(tokenHelper, /uuid_file=/, 'separate token UUID sidecar breaks atomic publication');
   forbid(tokenHelper, /--user\s+[^\n]*:/, 'token helper must not pass a password in arguments');
   forbid(tokenHelper, /export\s+[^\n]*(TOKEN|PASSWORD|SECRET)/i, 'token helper must not export secrets');
   forbid(dockerfile, /\b(?:ENV|ARG)\s+PLANE_[A-Z0-9_]*(?:TOKEN|PASSWORD|PRIVATE_KEY)=/,
