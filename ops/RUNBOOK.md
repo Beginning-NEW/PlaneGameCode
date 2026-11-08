@@ -1,0 +1,64 @@
+# PlaneGameCode 运维手册（离线候选，未上线）
+
+依据：[已接受的计划修订版 2](/YOU/issues/YOU-1#document-plan)、[技术规格](/YOU/issues/YOU-2#document-technical-spec)、[风险登记](/YOU/issues/YOU-2#document-risk-register)。本手册仅涵盖 `plane-demo.emotionstock.com` 专属站点、单个 PlaneGameCode Compose 服务和它的回环端口。任何生产操作必须由被授予相应 Paperclip 权限的运维执行，并在每次变更前记录最近健康镜像和上一版专属站点配置。当前没有受限服务器访问、审计快照、候选镜像或既有健康版本；下述步骤是操作程序，不是已执行记录。
+
+## 权限与停止条件
+
+- GitHub：CTO/工程师取得指定仓库内容写、PR/Actions 读、受保护部署环境的最小权限，提供已审核候选 SHA、不可变镜像 digest 和真实 CI run。运维只在获分配的部署权限范围内取用候选。
+- SSH：通过 Paperclip Connection/Secret 提供仅能读审计数据及操作应用目录、应用 Compose 服务的部署身份；Nginx 权限仅可处理本子域专属配置、运行 `nginx -t`、校验成功后 reload。无访问时不得尝试其他账户。
+- DNS：仅 `plane-demo.emotionstock.com` A 记录可编辑，目标 `8.209.80.47`；证书权限仅用于此子域的 ACME 签发和续期。证书签发方式由受限授权决定，不假定有 DNS API 或 certbot 插件。
+- 端口冲突、缺少可验证的 `previous_healthy_sha`/上一版专属配置、镜像 digest 不符、`nginx -t` 失败、www 基线异常、容器或公开健康失败：停止后续应用变更；如已更改本应用，按下面的回滚步骤恢复。不得改根域、www、其他虚拟主机/容器、全局防火墙或新增平台。
+
+## 1. 只读审计：在任何生产变更之前
+
+以受限 SSH 登录已授权目标后，仅对该服务器执行只读命令，逐项记录 UTC 时间、执行身份、命令退出码和已脱敏摘要。服务器与 DNS/公开探针尚未访问时均填「未验证」，不得填写推测的端口、证书或 www 状态。
+
+```sh
+date -u +%FT%TZ
+nginx -v
+nginx -t
+ss -ltnp
+docker ps --format '{{.Names}} {{.Image}} {{.Ports}} {{.Status}}'
+docker compose version
+```
+
+用受限只读权限列出 Nginx **已启用站点名/软链目标**，核对 80/443 的进程与已有 `server_name`，单独检查是否已有 `plane-demo` 站点、对应证书路径与现有 www 站点。按目标机布局选择读取方式；`nginx -T` 可能包含其他站点敏感字段，不上传原始全量输出，只保留站点名、绑定端口、证书路径的脱敏摘要和文件校验值。对已有 plane-demo 专属文件计算 SHA-256，留存上一版本的安全备份位置与散列；不存在则注明「无上一专属配置」。不要复制证书私钥内容。
+
+从已批准的 DNS 控制面只读核对本子域现有记录、TTL；从已授权的独立探针记录 `https://www.emotionstock.com/` 的状态码、跳转目标、TLS 到期日、响应体 SHA-256，并在有既定健康路径时记录其状态码/内容摘要；记录探针时间和解析 IP。若 www 发生异常，先停止，不以本次部署覆盖异常。记录容器清单、监听端口和 80/443 占用摘要，并作为变更前基线附在任务中。
+
+从 `ss -ltnp`、已有容器端口映射和 Nginx 配置中选择未占用的高位 `127.0.0.1:<端口>`；在实际应用启动前再次验证该端口没有监听者，且 Compose 仅绑定该回环地址。**端口尚未选择；本地机器端口不能证明服务器端口可用。**
+
+## 2. 配置与发布预检
+
+1. 从 CTO/工程师核对候选 SHA、CI run、镜像仓库与不可变 digest；验证所拉取镜像的 digest 对应批准 SHA。确认 QA/CMO 的放行结果及 CEO Go/No-Go 要求。保存 `previous_healthy_sha`、上一健康镜像 digest、当前应用 Compose 配置 revision、上一专属 Nginx 配置 SHA-256/备份位置。首次发布如果没有之前健康应用版本，明确记录「首次发布，无旧应用可切回」，用撤回专属站点及停止本应用作为事先批准的回退目标；不要伪称已有健康 SHA 或已完成双版本回滚演练。
+2. 仅在完成审计后，将 `nginx/plane-demo.conf.template` 的两个证书标记替换为**已签发且仅属本子域**的 fullchain 与私钥绝对路径。应用上游固定为 `127.0.0.1:18081`；只有 TLS 虚拟主机中的精确 `POST /github/workflow-run` 路由可代理到 HMAC-first 准入网关 `127.0.0.1:9080`，并保留 GitHub delivery/event/signature 请求头。Jenkins controller `127.0.0.1:18080` 不得出现在任何 Nginx `listen` 或 `proxy_pass` 中。先运行 `node ops/nginx/check-plane-demo-contract.mjs`，再核验生成文件没有标记残留、`server_name` 仅为目标子域且证书文件可由 Nginx 读到；保存生成配置 SHA-256 和上一版专属文件备份。证书尚未签发时先按批准的 ACME 流程签发，不启用指向不存在证书的 443 站点。ACME challenge 的临时配置必须只限本子域，先语法检查并记录回退；不能扩大到 www。
+3. 检查 Compose 解析结果：只操作明确命名的本应用 service，镜像必须锁定已批准的 SHA/digest；端口必须仅是 `127.0.0.1:<审计端口>:<容器端口>`，不映射 `0.0.0.0`、80 或 443。验证目标端口可用、镜像存在且可启动、`/healthz` 返回预期结果；不得调用不带服务名的 `docker compose down`、`up` 或 `pull` 影响其他容器。若工程脚本尚未交付，先审查/预演其无副作用模式，再考虑部署。
+4. 记录每次变更的执行者、UTC 起始时间、候选/恢复 SHA、镜像 digest、Compose 与专属 Nginx 配置 revision、变更前健康/www 摘要；先执行 `nginx -t` 并核验通过，再对专属站点做最小变更和 `nginx -t`，最后才最小 reload。校验失败立刻恢复上一专属文件、复检 `nginx -t`；不调整其他站点配置。
+
+## 3. 发布和健康验证
+
+在已确认回滚目标和可用镜像后，仅更新 Compose 中**本应用服务**到批准的 SHA/digest，等待容器健康，不满足超时时恢复上一个健康镜像。检查本机回环 `/healthz` 和首页，再检查 Nginx 代理的 `/healthz` 与首页。使用专属 access/error 日志和本应用容器日志确认启动时间与版本 SHA；记录健康状态及最近错误摘要，日志只保存脱敏片段。每次更新记录完整的起止 UTC 时间与操作者。
+
+仅修改 `plane-demo.emotionstock.com` 的 DNS A 记录，核验传播后解析结果；检查 HTTP→HTTPS 跳转、TLS 域名/证书链/有效期、公开首页、公开 `/healthz`，并在同一探针位置重测 www 首页/既定健康路径。对照变更前 www 的 IP、状态、跳转和响应摘要；动态首页内容差异需人工甄别。记录 GitHub Actions 真实更新 run 的 SHA、结束时间与产物；没有这份真实记录不能称自动更新通过。
+
+## 4. 回滚演练与失败处置
+
+仅在 `previous_healthy_sha` 对应的旧健康镜像真实存在且已验证、配置备份可恢复、www 基线正常、具备明确变更授权时演练：记下候选 SHA/digest 与当前健康结果，将**仅本应用 service**切回 `previous_healthy_sha`/镜像 digest；核验容器健康、回环与公开 `/healthz`/首页和 www；记录恢复起止 UTC、耗时、实际恢复 SHA/digest、Nginx revision、触发原因、执行人。第一次切回成功后，只有预检和 QA 门槛仍满足才恢复候选，并再次核验全部指标。任一步失败，停留在最近已知健康状态并升级 CTO。
+
+若反代失败，仅恢复专属站点上一版本文件，`nginx -t` 通过后最小 reload，再测 www；若证书/DNS 失败，仅撤回本子域新建的记录或专属站点（需先核对旧值、TTL 与传播），保留故障证据。若 CI 失败，保持现有健康版本，记录失败 run，交 CTO/工程师修复；不得用未经批准的镜像代替。发布中任何 www 异常都停止本应用变更、优先恢复最后健康的专属配置与镜像并报告 CTO。
+
+## 5. 日常检查、证书和升级
+
+每日或发布后检查：本应用容器健康、镜像 SHA/digest、应用启动/版本日志、专属 `/var/log/nginx/plane-demo.access.log` 与 `.error.log` 的错误趋势、回环及公开 `/healthz`/首页、www 既定探针。按 ACME 管理机制只读检查本子域证书路径、有效期、续期任务和最近续期结果；续期测试需有该子域范围内的授权及配置回退目标。不要记录凭据值，轮换从 Paperclip Connections/Secrets 的受限授权入口进行。
+
+健康持续失败、证书临近过期、DNS 错误、www 异常或无法恢复时立即暂停发布并通知 CTO；功能/设备问题交 QA，用户文案交 CMO，新增费用交 CFO 与 CTO。把审计快照、预检结论、真实探针、候选和回滚记录附到本任务，再由 CTO 汇总向 CEO 提交 Go/No-Go。没有真实外部验证时状态始终为**未上线**。
+
+## 本轮证据占位（不得当作实测）
+
+| 项目 | 当前状态 |
+| --- | --- |
+| 服务器站点/80/443/监听/容器/www 快照 | 未获受限 SSH，未审计 |
+| 子域 DNS、证书路径、回环端口 | 应用 `18081` 与 webhook 网关 `9080` 已版本化；服务器监听、DNS 与证书仍未获受限访问及验证 |
+| 候选 SHA/digest、上一健康 SHA、配置 revision | 工程候选与生产历史未交付，未验证 |
+| Nginx 语法、容器/公开健康、TLS、www 前后 | 未执行生产预检或变更 |
+| 实际部署/回滚/自动更新 | 未执行，未上线 |

@@ -1,0 +1,34 @@
+[Unit]
+Description=PlaneGame Stage B rootless webhook admission gateway
+After=network-online.target
+Wants=network-online.target
+ConditionPathIsRegular=%h/.config/plane-game/credentials/webhook-secret
+ConditionPathIsRegular=%h/.config/plane-game/credentials/jenkins-api-token
+
+[Service]
+Type=simple
+WorkingDirectory=%h/plane-game-cd
+RuntimeDirectory=plane-game-webhook
+RuntimeDirectoryMode=0700
+UMask=0077
+Environment=DOCKER_HOST=unix:///run/user/1003/docker.sock
+Environment=WEBHOOK_LISTEN_HOST=127.0.0.1
+Environment=WEBHOOK_LISTEN_PORT=9080
+Environment=WEBHOOK_STATE_DB=%h/.local/state/plane-game-webhook/deliveries.sqlite
+Environment=WEBHOOK_SECRET_FILE=%h/.config/plane-game/credentials/webhook-secret
+Environment=JENKINS_URL=http://127.0.0.1:18080
+Environment=JENKINS_USER=plane-webhook-gateway
+Environment=JENKINS_API_TOKEN_FILE=%h/.config/plane-game/credentials/jenkins-api-token
+ExecStart=/usr/bin/flock --no-fork --nonblock %t/plane-game-webhook/gateway.lock /usr/bin/node %h/plane-game-cd/ops/jenkins/webhook-gateway.mjs
+Restart=no
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ProtectProc=invisible
+ReadWritePaths=%h/.local/state/plane-game-webhook

@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "stage": "B",
+  "defaultState": "disabled",
+  "controller": {
+    "core": "2.580.2",
+    "java": "21",
+    "baseImage": "jenkins/jenkins@sha256:74401de6a6f92e1afe1b02d1c8e3d0c33f263bfb5275dd8813f9150355f2367b",
+    "hostBinding": "127.0.0.1:18080:8080",
+    "forbiddenHostPorts": [8080, 50000],
+    "executors": 0,
+    "inboundAgentPort": -1,
+    "homeVolume": "plane-game-jenkins-stage-b-home",
+    "restart": "no",
+    "readOnlyRootfs": true,
+    "noNewPrivileges": true,
+    "capDrop": ["ALL"],
+    "limits": {
+      "memory": "1g",
+      "memoryReservation": "768m",
+      "memorySwap": "1g",
+      "cpus": "0.50",
+      "pidsLimit": 256
+    },
+    "jvm": [
+      "-Xms128m",
+      "-Xmx512m",
+      "-XX:MaxMetaspaceSize=256m",
+      "-XX:+ExitOnOutOfMemoryError"
+    ]
+  },
+  "agent": {
+    "name": "plane-game-cd-rootless",
+    "uid": 1003,
+    "user": "plane-preflight",
+    "executors": 1,
+    "mode": "EXCLUSIVE",
+    "label": "plane-game-cd-rootless",
+    "remoteRoot": "/home/plane-preflight/jenkins-agent",
+    "credentialId": "plane-game-agent-ssh",
+    "credentialScope": "SYSTEM",
+    "credentialSource": "/run/secrets/PLANE_AGENT_PRIVATE_KEY",
+    "hostKeyAlgorithm": "ssh-ed25519",
+    "hostKeySource": "/run/secrets/PLANE_AGENT_ED25519_HOST_KEY"
+  },
+  "gateway": {
+    "serviceScope": "user",
+    "defaultState": "disabled",
+    "dockerHost": "unix:///run/user/1003/docker.sock",
+    "jenkinsUrl": "http://127.0.0.1:18080"
+  },
+  "jobs": {
+    "plane-game/main-cd": "disabled"
+  }
+}

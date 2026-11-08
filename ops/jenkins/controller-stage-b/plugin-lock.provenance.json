@@ -1,0 +1,20 @@
+{
+  "schema": 2,
+  "generatedAt": "2026-11-06T11:25:00Z",
+  "generator": "ops/jenkins/controller-stage-b/generate-plugin-lock.mjs",
+  "core": "2.580.2",
+  "officialUpdateCenter": {
+    "requestedUrl": "https://updates.jenkins.io/stable/update-center.actual.json",
+    "inputFile": "update-center.actual.json",
+    "sha256": "b26245e69b38121658c1d5a0f8ab4c671bbc0e69500f0359a5cc11bce28a2f2a"
+  },
+  "historicalSupplements": {
+    "file": "plugin-supplements.json",
+    "sha256": "4473934d5c0d4319099e41edb8f4bce27841420428ba6754f5e3d807652bb3af",
+    "source": "https://updates.jenkins.io/download/plugins/",
+    "verifiedAt": "2026-11-06T11:25:00Z"
+  },
+  "directCount": 10,
+  "pluginCount": 66,
+  "pluginsLockSha256": "936d5276c6864dc71a7224b9faaac5e033052f26eb7f98dd6d25b6a3f227f8e6"
+}

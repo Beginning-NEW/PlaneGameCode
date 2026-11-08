@@ -1,0 +1,41 @@
+[Unit]
+Description=PlaneGame GitHub webhook admission gateway
+After=network-online.target jenkins.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=plane-webhook
+Group=plane-webhook
+WorkingDirectory=/opt/plane-game-cd
+StateDirectory=plane-game-webhook
+StateDirectoryMode=0700
+RuntimeDirectory=plane-game-webhook
+RuntimeDirectoryMode=0700
+LoadCredential=webhook-secret:/etc/plane-game/secrets/webhook-secret
+LoadCredential=jenkins-api-token:/etc/plane-game/secrets/jenkins-api-token
+UMask=0077
+Environment=WEBHOOK_LISTEN_HOST=127.0.0.1
+Environment=WEBHOOK_LISTEN_PORT=9080
+Environment=WEBHOOK_STATE_DB=/var/lib/plane-game-webhook/deliveries.sqlite
+Environment=WEBHOOK_SECRET_FILE=%d/webhook-secret
+Environment=JENKINS_URL=http://127.0.0.1:18080
+Environment=JENKINS_USER=plane-webhook-gateway
+Environment=JENKINS_API_TOKEN_FILE=%d/jenkins-api-token
+ExecStart=/usr/bin/flock --no-fork --nonblock /run/plane-game-webhook/gateway.lock /usr/bin/node /opt/plane-game-cd/ops/jenkins/webhook-gateway.mjs
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ProtectProc=invisible
+ReadWritePaths=/var/lib/plane-game-webhook
+
+[Install]
+WantedBy=multi-user.target

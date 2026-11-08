@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "source": "https://updates.jenkins.io/download/plugins/",
+  "verifiedAt": "2026-11-06T11:25:00Z",
+  "plugins": {
+    "eddsa-api": {
+      "version": "0.3.0.1-19.vc432d923e5ee",
+      "sha256": "NcfeyywIrMuWp6TVTKx9CvZxPCQhkhQtrVbOxQlJFDo=",
+      "url": "https://updates.jenkins.io/download/plugins/eddsa-api/0.3.0.1-19.vc432d923e5ee/eddsa-api.hpi",
+      "requiredCore": "2.479.1",
+      "dependencies": []
+    },
+    "ssh-slaves": {
+      "version": "3.1097.v868116049892",
+      "sha256": "jWxJlqrSPIhZKKDQ3HQiAO2URzGJQ0qTgzuPDeMGWX8=",
+      "url": "https://updates.jenkins.io/download/plugins/ssh-slaves/3.1097.v868116049892/ssh-slaves.hpi",
+      "requiredCore": "2.504.1",
+      "dependencies": [
+        { "name": "commons-lang3-api", "version": "3.18.0-98.v3a_674c06072d", "optional": false },
+        { "name": "credentials", "version": "1442.v292d4234d1b_f", "optional": false },
+        { "name": "ssh-credentials", "version": "361.vb_f6760818e8c", "optional": false },
+        { "name": "trilead-api", "version": "2.209.v0e69b_c43c245", "optional": false }
+      ]
+    },
+    "trilead-api": {
+      "version": "2.209.v0e69b_c43c245",
+      "sha256": "fowAdnrCTQF+JiZl1nbM10sbIgKPchD4VSD/E5vYIe0=",
+      "url": "https://updates.jenkins.io/download/plugins/trilead-api/2.209.v0e69b_c43c245/trilead-api.hpi",
+      "requiredCore": "2.479.1",
+      "dependencies": [
+        { "name": "eddsa-api", "version": "0.3.0.1-19.vc432d923e5ee", "optional": false },
+        { "name": "gson-api", "version": "2.12.1-113.v347686d6729f", "optional": false }
+      ]
+    }
+  }
+}
