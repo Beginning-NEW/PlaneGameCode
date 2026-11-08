@@ -27,7 +27,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm format --check
       - run: pnpm test
-      - run: bash -n deploy/*.sh deploy/plane-preflight ops/jenkins/*.sh
+      - run: bash -n deploy/*.sh deploy/plane-preflight ops/jenkins/*.sh ops/jenkins/controller-stage-b/*.sh
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e

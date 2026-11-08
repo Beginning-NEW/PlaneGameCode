@@ -49,7 +49,7 @@ const scriptNames = [
 ];
 const [runtimeText, dockerfile, casc, job, gateway, directText, lockText, installText,
   hashesText, snapshotText, supplementsText, provenanceText, manifestText, rollback,
-  ...scriptTexts] = await Promise.all([
+  init, health, tokenHelper, credentialManifestText, ...scriptTexts] = await Promise.all([
   readFile(new URL('runtime-manifest.json', profile), 'utf8'),
   readFile(new URL('Dockerfile', profile), 'utf8'),
   readFile(new URL('casc.yaml', profile), 'utf8'),
@@ -64,6 +64,10 @@ const [runtimeText, dockerfile, casc, job, gateway, directText, lockText, instal
   readFile(new URL('plugin-lock.provenance.json', profile), 'utf8'),
   readFile(new URL('config-files.sha256', profile), 'utf8'),
   readFile(new URL('ROLLBACK.md', profile), 'utf8'),
+  readFile(new URL('init.groovy', profile), 'utf8'),
+  readFile(new URL('healthcheck.sh', profile), 'utf8'),
+  readFile(new URL('manage-gateway-token.sh', profile), 'utf8'),
+  readFile(new URL('credential-manifest.json', profile), 'utf8'),
   ...scriptNames.map((name) => readFile(new URL(name, profile), 'utf8')),
 ]);
 const runtime = JSON.parse(runtimeText);
@@ -115,7 +119,8 @@ test('Stage B plugin and artifact lock is a complete 66-item closure', () => {
 });
 
 test('controller runtime is loopback-only, hardened, persistent, and bounded to 1 GiB', () => {
-  assert.equal(assertStageBContract({ runtime, dockerfile, casc, job, gateway, scripts }), true);
+  assert.equal(assertStageBContract({ runtime, dockerfile, casc, job, gateway, scripts,
+    init, health, tokenHelper, credentialManifest: credentialManifestText }), true);
   const runner = scriptTexts[scriptNames.indexOf('run-controller.sh')];
   for (const required of [
     '--publish "$JENKINS_HOST_IP:$JENKINS_HOST_PORT:$JENKINS_CONTAINER_PORT"',
@@ -145,6 +150,8 @@ test('SSH agent and gateway use fixed identity, file references, and disabled de
   assert.match(casc, /PLANE_AGENT_PRIVATE_KEY/);
   assert.match(casc, /PLANE_AGENT_ED25519_HOST_KEY/);
   assert.match(job, /disabled\(true\)/);
+  assert.match(job, /Item[.]Read', 'plane-webhook-gateway'/);
+  assert.match(job, /Item[.]Build', 'plane-webhook-gateway'/);
   assert.doesNotMatch(job, /triggers\s*\{|githubPush\(\)/);
   assert.doesNotMatch(gateway, /^\[Install\]|^WantedBy=|^User=|^Group=/m);
   assert.match(gateway, /Restart=no/);
@@ -164,6 +171,10 @@ test('negative contract rejects exposure, root units, executors, enabled jobs, b
     job,
     gateway,
     scripts,
+    init,
+    health,
+    tokenHelper,
+    credentialManifest: credentialManifestText,
     ...overrides,
   });
   assert.throws(check({ runtime: { ...runtime, controller: { ...runtime.controller, hostBinding: '0.0.0.0:18080:8080' } } }), /loopback-only/);

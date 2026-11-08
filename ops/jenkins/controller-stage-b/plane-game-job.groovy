@@ -1,4 +1,10 @@
 // Imported by JCasC. The job remains disabled until the separate enablement gate.
+folder('plane-game') {
+  authorization {
+    permission('hudson.model.Item.Read', 'plane-webhook-gateway')
+  }
+}
+
 pipelineJob('plane-game/main-cd') {
   description('Stage B main-only CD; disabled until controller, agent, gateway, QA, and security gates pass.')
   disabled(true)
@@ -7,6 +13,10 @@ pipelineJob('plane-game/main-cd') {
     stringParam('ACTIONS_RUN_ID', '', 'workflow_run.id; identity only')
     stringParam('ACTIONS_RUN_ATTEMPT', '', 'workflow_run.run_attempt')
     stringParam('WEBHOOK_DELIVERY', '', 'Validated X-GitHub-Delivery UUID')
+  }
+  authorization {
+    permission('hudson.model.Item.Read', 'plane-webhook-gateway')
+    permission('hudson.model.Item.Build', 'plane-webhook-gateway')
   }
   definition {
     cpsScm {

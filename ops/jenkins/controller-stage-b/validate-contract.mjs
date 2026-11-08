@@ -11,8 +11,11 @@ function forbid(text, pattern, message) {
   if (pattern.test(text)) throw new Error(message);
 }
 
-export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, scripts }) {
+export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, scripts,
+  init, health, tokenHelper, credentialManifest }) {
   const manifest = typeof runtime === 'string' ? JSON.parse(runtime) : runtime;
+  const credentialMetadata = typeof credentialManifest === 'string'
+    ? JSON.parse(credentialManifest) : credentialManifest;
   const controller = manifest.controller;
   if (manifest.defaultState !== 'disabled') throw new Error('Stage B must default disabled');
   if (controller.hostBinding !== '127.0.0.1:18080:8080') throw new Error('controller must be loopback-only on 18080');
@@ -28,11 +31,16 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   }
 
   requireMatch(dockerfile, /jenkins\/jenkins@sha256:[0-9a-f]{64}/, 'base image is not digest pinned');
+  requireMatch(dockerfile, /-Djenkins[.]install[.]runSetupWizard=false/, 'setup wizard must remain disabled');
+  requireMatch(dockerfile, /CASC_STRICT_SECRET_RESOLUTION=true/, 'JCasC strict secret resolution is not enabled');
+  requireMatch(dockerfile, /-Dcasc[.]strict[.]secret[.]resolution=true/, 'JCasC strict system property is missing');
   for (const option of controller.jvm) {
     if (!dockerfile.includes(option)) throw new Error(`Dockerfile missing ${option}`);
   }
   requireMatch(casc, /numExecutors: 0/, 'controller must have zero executors');
   requireMatch(casc, /slaveAgentPort: -1/, 'inbound agent port must be disabled');
+  requireMatch(casc, /name: "plane-admin"[\s\S]*"Overall\/Administer"/, 'fixed admin grant is missing');
+  requireMatch(casc, /name: "authenticated"[\s\S]*"Overall\/Read"/, 'authenticated read grant is missing');
   requireMatch(casc, /name: "plane-game-cd-rootless"/, 'bounded agent name missing');
   requireMatch(casc, /remoteFS: "\/home\/plane-preflight\//, 'agent remote root is not bounded');
   requireMatch(casc, /numExecutors: 1/, 'agent must have one executor');
@@ -40,9 +48,70 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(casc, /scope: SYSTEM/, 'agent credential must be SYSTEM scoped');
   requireMatch(casc, /manuallyProvidedKeyVerificationStrategy:/, 'fixed host-key verifier missing');
   requireMatch(casc, /PLANE_AGENT_ED25519_HOST_KEY/, 'Ed25519 host-key file reference missing');
+  for (const source of [
+    'PLANE_AGENT_HOST',
+    'PLANE_AGENT_ED25519_HOST_KEY',
+    'PLANE_AGENT_PRIVATE_KEY',
+    'PLANE_GITHUB_SCM_USERNAME',
+    'PLANE_GITHUB_SCM_PASSWORD',
+    'PLANE_GITHUB_ACTIONS_TOKEN',
+    'PLANE_GHCR_USERNAME',
+    'PLANE_GHCR_TOKEN',
+  ]) {
+    if (!casc.includes(`\${trim:\${readFile:/run/secrets/${source}}}`)) {
+      throw new Error(`strict file secret source missing for ${source}`);
+    }
+  }
+  requireMatch(casc, /usernamePassword:[\s\S]*scope: GLOBAL[\s\S]*id: "plane-github-scm-read"/, 'SCM credential contract missing');
+  requireMatch(casc, /string:[\s\S]*scope: GLOBAL[\s\S]*id: "plane-github-actions-read"/, 'Actions credential contract missing');
+  requireMatch(casc, /usernamePassword:[\s\S]*scope: GLOBAL[\s\S]*id: "plane-ghcr-pull"/, 'GHCR credential contract missing');
   forbid(casc, /nonVerifyingKeyVerificationStrategy|manuallyTrustedKeyVerificationStrategy/, 'host-key bypass is forbidden');
   requireMatch(job, /disabled\(true\)/, 'job must default disabled');
+  requireMatch(job, /folder\('plane-game'\)[\s\S]*Item[.]Read[\s\S]*plane-webhook-gateway/, 'gateway folder read grant missing');
+  requireMatch(job, /Item[.]Read'[\s\S]*plane-webhook-gateway[\s\S]*Item[.]Build'[\s\S]*plane-webhook-gateway/, 'gateway job read/build grants missing');
+  forbid(job, /Item[.](Configure|Delete).*plane-webhook-gateway/, 'gateway has a forbidden job grant');
   forbid(job, /triggers\s*\{|githubPush\(\)/, 'job must not install a webhook trigger');
+
+  requireMatch(init, /fresh home requires the one-time admin bcrypt bootstrap file/, 'fresh-home fail-closed gate missing');
+  requireMatch(init, /createAccountWithHashedPassword\(adminId, hashedPassword\)/, 'bcrypt bootstrap API missing');
+  requireMatch(init, /bootstrap file must be removed after its one-time application/, 'one-time bootstrap replay rejection missing');
+  requireMatch(init, /CredentialsProvider[.]VIEW/, 'gateway credential-view denial proof missing');
+  requireMatch(init, /Jenkins[.]RUN_SCRIPTS/, 'gateway Script Console denial proof missing');
+  requireMatch(init, /stage-b-ready-v2/, 'authorization readiness marker missing');
+  requireMatch(health, /stage-b-ready-v2/, 'healthcheck does not require authorization readiness');
+
+  for (const name of ['github-scm-username', 'github-scm-password', 'github-actions-token', 'ghcr-username', 'ghcr-token']) {
+    if (!scripts.includes(name)) throw new Error(`runner missing distinct host file ${name}`);
+  }
+  requireMatch(scripts, /stat -c '%u'/, 'secret ownership validation missing');
+  requireMatch(scripts, /400\|440\|600\|640/, 'strict secret mode validation missing');
+  requireMatch(scripts, /stage-b-secret-preflight/, 'rootless image-user readability proof missing');
+  requireMatch(scripts, /PLANE_ADMIN_BOOTSTRAP_BCRYPT/, 'optional bootstrap mount missing');
+  requireMatch(scripts, /index [. ]Config[.]Labels "io[.]paperclip[.]plane-game[.]stage"/, 'stopped-container label guard missing');
+  requireMatch(scripts, /docker rm "\$JENKINS_CONTAINER"/, 'bounded stopped-container recreation missing');
+  forbid(scripts, /docker rm\s+(?:--force|-f)/, 'forced controller removal is forbidden');
+
+  if (credentialMetadata.valuesAreMetadataOnly !== true || credentialMetadata.credentials.length !== 4) {
+    throw new Error('credential metadata manifest is incomplete');
+  }
+  const metadataById = new Map(credentialMetadata.credentials.map((entry) => [entry.id, entry]));
+  for (const [id, kind, scope] of [
+    ['plane-github-scm-read', 'usernamePassword', 'GLOBAL'],
+    ['plane-github-actions-read', 'secretText', 'GLOBAL'],
+    ['plane-ghcr-pull', 'usernamePassword', 'GLOBAL'],
+    ['plane-game-agent-ssh', 'basicSSHUserPrivateKey', 'SYSTEM'],
+  ]) {
+    const entry = metadataById.get(id);
+    if (entry?.kind !== kind || entry?.scope !== scope) throw new Error(`credential manifest mismatch for ${id}`);
+  }
+  requireMatch(tokenHelper, /jenkins_url=http:\/\/127[.]0[.]0[.]1:18080/, 'token helper is not fixed loopback-only');
+  requireMatch(tokenHelper, /create\|rotate\|prune\|revoke/, 'token lifecycle operations are incomplete');
+  forbid(tokenHelper, /--user\s+[^\n]*:/, 'token helper must not pass a password in arguments');
+  forbid(tokenHelper, /export\s+[^\n]*(TOKEN|PASSWORD|SECRET)/i, 'token helper must not export secrets');
+  forbid(dockerfile, /\b(?:ENV|ARG)\s+PLANE_[A-Z0-9_]*(?:TOKEN|PASSWORD|PRIVATE_KEY)=/,
+    'image metadata must not carry credential values');
+  forbid(scripts, /docker\s+run[^\n]*(?:--env|-e\s+)[^\n]*(?:TOKEN|PASSWORD|PRIVATE_KEY)/,
+    'Docker arguments must not carry credential values');
 
   requireMatch(gateway, /DOCKER_HOST=unix:\/\/\/run\/user\/1003\/docker[.]sock/, 'gateway must use rootless Docker');
   requireMatch(gateway, /JENKINS_URL=http:\/\/127[.]0[.]0[.]1:18080/, 'gateway must reach loopback Jenkins only');
@@ -50,8 +119,9 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(gateway, /WEBHOOK_SECRET_FILE=%h\/.config\/plane-game\/credentials\/webhook-secret/, 'gateway credential must be a file reference');
   forbid(gateway, /^User=|^Group=|^\[Install\]|^WantedBy=/m, 'root-level or enableable gateway unit is forbidden');
 
-  const all = [dockerfile, casc, job, gateway, scripts].join('\n');
+  const all = [dockerfile, casc, job, gateway, scripts, init, health, tokenHelper].join('\n');
   forbid(all, /-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+/, 'plaintext credential material is forbidden');
+  forbid(all, /PLANE_GAME_GITHUB_TOKEN/, 'legacy shared GitHub token must not be reused');
   forbid(all, /\/var\/run\/docker[.]sock|docker[.]sock.*group|\bsudo\b|docker\s+(system|image|volume|network)\s+prune|rm\s+-rf/, 'broad or rootful privilege is forbidden');
   requireMatch(scripts, /io[.]paperclip[.]plane-game[.]stage=controller-b/, 'bounded Stage B cleanup label missing');
   requireMatch(scripts, /plane-game-jenkins-stage-b/, 'bounded controller name missing');
@@ -60,16 +130,21 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
 
 async function main() {
   const directory = new URL('.', import.meta.url);
-  const [runtime, dockerfile, casc, job, gateway, ...scriptTexts] = await Promise.all([
+  const [runtime, dockerfile, casc, job, gateway, init, health, tokenHelper, credentialManifest, ...scriptTexts] = await Promise.all([
     readFile(new URL('runtime-manifest.json', directory), 'utf8'),
     readFile(new URL('Dockerfile', directory), 'utf8'),
     readFile(new URL('casc.yaml', directory), 'utf8'),
     readFile(new URL('plane-game-job.groovy', directory), 'utf8'),
     readFile(new URL('systemd-user/plane-game-webhook-gateway.service', directory), 'utf8'),
+    readFile(new URL('init.groovy', directory), 'utf8'),
+    readFile(new URL('healthcheck.sh', directory), 'utf8'),
+    readFile(new URL('manage-gateway-token.sh', directory), 'utf8'),
+    readFile(new URL('credential-manifest.json', directory), 'utf8'),
     ...['build-image.sh', 'run-controller.sh', 'disable-stage-b.sh', 'backup-home.sh',
       'restore-home.sh', 'rollback-stage-b.sh'].map((file) => readFile(new URL(file, directory), 'utf8')),
   ]);
-  assertStageBContract({ runtime, dockerfile, casc, job, gateway, scripts: scriptTexts.join('\n') });
+  assertStageBContract({ runtime, dockerfile, casc, job, gateway, scripts: scriptTexts.join('\n'),
+    init, health, tokenHelper, credentialManifest });
   console.log('Stage B static contract: PASS');
 }
 

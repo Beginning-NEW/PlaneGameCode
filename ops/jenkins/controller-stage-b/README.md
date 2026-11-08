@@ -32,23 +32,57 @@ node ops/jenkins/controller-stage-b/generate-plugin-lock.mjs \
 
 `build-image.sh` requires the digest-pinned base image to have been acquired in a separate approved step and records the immutable built image ID. `run-controller.sh` accepts only that image-ID form and only the bounded Stage B home-volume namespace.
 
+## First-run administrator and readiness
+
+The setup wizard remains disabled. A home without the fixed `plane-admin` local principal fails closed unless `admin-bootstrap-bcrypt` is mounted read-only as `/run/secrets/PLANE_ADMIN_BOOTSTRAP_BCRYPT`. The file contains one Jenkins-native bcrypt value (`#jbcrypt:$2...`), never a plaintext password. Generate it without putting the password in shell arguments or environment values:
+
+```sh
+umask 077
+approved_dir="$HOME/.config/plane-game/controller-stage-b"
+printf '#jbcrypt:' > "$approved_dir/admin-bootstrap-bcrypt"
+htpasswd -nBC 12 plane-admin | sed -e 's/^[^:]*://' -e 's/^\$2y\$/\$2a\$/' >> "$approved_dir/admin-bootstrap-bcrypt"
+chmod 0600 "$approved_dir/admin-bootstrap-bcrypt"
+```
+
+The password prompts are interactive and hidden. On the first healthy boot, remove `admin-bootstrap-bcrypt` from the approved directory before any restart. A retained identical file makes the next start fail; this proves the file is one-time. For later starts, run the bounded `disable-stage-b.sh` path and then `run-controller.sh`; the runner removes only the stopped, correctly labelled controller and recreates its read-only mounts while retaining the named home volume. A restart without the bootstrap file succeeds from the persisted user record. To rotate, disable the controller, write a different `#jbcrypt` value to the same protected file, start once, wait for healthy status, then remove it. Reusing the previously applied hash is rejected.
+
+`init.groovy` clears the readiness marker first and recreates it only after SYSTEM has verified the admin ACL, the gateway ACL, exact credential types/scopes, the disabled job, zero controller executors, the disabled inbound port, and the bounded SSH agent. `healthcheck.sh` requires that authorization/bootstrap proof as well as login `200` and anonymous API `403`; those HTTP codes alone cannot make the controller healthy.
+
 ## SSH Build Agent and credentials
 
 JCasC declares one exclusive `plane-game-cd-rootless` SSH agent with one executor and remote root `/home/plane-preflight/jenkins-agent`. The launcher uses a manually provided Ed25519 host key, never trust-on-first-use or a non-verifying strategy.
 
-No credential value is committed. Before a separately approved start, the operator supplies three mode-0600 files from the approved credential/configuration workflow:
+No credential value is committed. JCasC strict secret resolution is enabled; every required value uses an explicit, trimmed `/run/secrets` file read. Before a separately approved start, the operator supplies these distinct files from the approved credential/configuration workflow:
 
 - `agent-host`;
 - `agent-host-key`, containing one fixed `ssh-ed25519` public host key;
-- `agent-private-key`, mounted read-only as the JCasC Docker secret `PLANE_AGENT_PRIVATE_KEY`.
+- `agent-private-key` for SYSTEM-scope `plane-game-agent-ssh`;
+- `github-scm-username` and `github-scm-password` for GLOBAL `plane-github-scm-read` (repository Contents-read checkout only);
+- `github-actions-token` for GLOBAL `plane-github-actions-read` (Actions-read plus Contents-read verification only);
+- `ghcr-username` and `ghcr-token` for GLOBAL `plane-ghcr-pull` (`read:packages` only).
 
-JCasC creates only the SYSTEM-scope `plane-game-agent-ssh` reference from that file-backed secret. The job's deploy credential IDs remain references owned by the existing Jenkins credential workflow.
+The approved directory must be owned by UID 1003 with mode `0700` or `0750`. Each file must be a regular non-symlink owned by UID 1003 with mode `0400`, `0440`, `0600`, or `0640`. `run-controller.sh` does not change permissions: it launches the exact image user with the exact read-only mounts under `--network none` and refuses to start unless that user can read every file. Provision a narrow host ACL for the rootless user-namespace mapping when needed; never fall back to world-readable modes. Do not reuse or create `PLANE_GAME_GITHUB_TOKEN`. See `credential-manifest.json` for metadata only.
 
 ## Rootless gateway and disabled defaults
 
 `systemd-user/plane-game-webhook-gateway.service` is a `plane-preflight` user-service template. It has no `[Install]` section, no `User=`/`Group=`, no root-level target, `Restart=no`, the UID-1003 rootless Docker socket, loopback Jenkins only, and approved credential-file references. The repository's existing root-level gateway template is not a Stage B enablement path.
 
 The JCasC Job DSL creates `plane-game/main-cd` with `disabled(true)` and no webhook trigger. See `ROLLBACK.md` for deterministic job -> gateway -> controller disablement, checksum-verified cold backup/restore, first-release no-Jenkins/no-app rollback, and later last-healthy selection.
+
+JCasC also creates the fixed, non-interactive `plane-webhook-gateway` local principal. It receives only global `Overall/Read`, folder/job `Item/Read`, and job `Item/Build`; startup fails if it has Administer, Script Console, Credentials/View, folder Configure, job Configure, or job Delete.
+
+For the separately approved gateway phase, pre-create the existing host-only token target and its private parent, then run the bounded helper. It never prints a token, puts a secret in an argument/environment value, or contacts a non-loopback address:
+
+```sh
+install -d -m 0700 "$HOME/.config/plane-game/credentials"
+install -m 0600 /dev/null "$HOME/.config/plane-game/credentials/jenkins-api-token"
+bash ops/jenkins/controller-stage-b/manage-gateway-token.sh create
+bash ops/jenkins/controller-stage-b/manage-gateway-token.sh rotate
+bash ops/jenkins/controller-stage-b/manage-gateway-token.sh prune
+bash ops/jenkins/controller-stage-b/manage-gateway-token.sh revoke
+```
+
+`create` prompts twice, without echo, for the known `plane-admin` password corresponding to the bcrypt bootstrap. `rotate` atomically installs a new token, then revokes every prior gateway token; if revocation is interrupted, `prune` safely completes it using the installed token UUID metadata. `revoke` revokes all gateway tokens and empties the existing target. The separate host-only `webhook-secret` HMAC file is untouched and is not required for a no-webhook controller rehearsal. The gateway remains disabled and loopback-only.
 
 ## Offline verification
 
@@ -57,6 +91,7 @@ From the repository root:
 ```sh
 node ops/jenkins/controller-stage-b/validate-contract.mjs
 node --test tests/jenkins-stage-b-contract.test.mjs
+node --test tests/jenkins-stage-b-bootstrap.test.mjs
 bash -n ops/jenkins/controller-stage-b/*.sh
 (
   cd ops/jenkins/controller-stage-b

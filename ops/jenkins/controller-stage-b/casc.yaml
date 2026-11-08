@@ -11,6 +11,10 @@ jenkins:
   authorizationStrategy:
     globalMatrix:
       entries:
+        - user:
+            name: "plane-admin"
+            permissions:
+              - "Overall/Administer"
         - group:
             name: "authenticated"
             permissions:
@@ -29,18 +33,35 @@ jenkins:
         labelString: "plane-game-cd-rootless"
         launcher:
           ssh:
-            host: "${PLANE_AGENT_HOST}"
+            host: "${trim:${readFile:/run/secrets/PLANE_AGENT_HOST}}"
             port: 22
             credentialsId: "plane-game-agent-ssh"
             javaPath: "/usr/bin/java"
             hostKeyVerificationStrategy:
               manuallyProvidedKeyVerificationStrategy:
-                key: "${PLANE_AGENT_ED25519_HOST_KEY}"
+                key: "${trim:${readFile:/run/secrets/PLANE_AGENT_ED25519_HOST_KEY}}"
         retentionStrategy: "always"
 credentials:
   system:
     domainCredentials:
       - credentials:
+          - usernamePassword:
+              scope: GLOBAL
+              id: "plane-github-scm-read"
+              description: "GitHub repository Contents-read checkout credential"
+              username: "${trim:${readFile:/run/secrets/PLANE_GITHUB_SCM_USERNAME}}"
+              password: "${trim:${readFile:/run/secrets/PLANE_GITHUB_SCM_PASSWORD}}"
+          - string:
+              scope: GLOBAL
+              id: "plane-github-actions-read"
+              description: "GitHub Actions-read and Contents-read API verification token"
+              secret: "${trim:${readFile:/run/secrets/PLANE_GITHUB_ACTIONS_TOKEN}}"
+          - usernamePassword:
+              scope: GLOBAL
+              id: "plane-ghcr-pull"
+              description: "GHCR read:packages pull credential"
+              username: "${trim:${readFile:/run/secrets/PLANE_GHCR_USERNAME}}"
+              password: "${trim:${readFile:/run/secrets/PLANE_GHCR_TOKEN}}"
           - basicSSHUserPrivateKey:
               scope: SYSTEM
               id: "plane-game-agent-ssh"
@@ -48,7 +69,7 @@ credentials:
               username: "plane-preflight"
               privateKeySource:
                 direct:
-                  privateKey: "${PLANE_AGENT_PRIVATE_KEY}"
+                  privateKey: "${trim:${readFile:/run/secrets/PLANE_AGENT_PRIVATE_KEY}}"
 jobs:
   - file: /usr/share/jenkins/ref/jobs/plane-game-job.groovy
 unclassified:
