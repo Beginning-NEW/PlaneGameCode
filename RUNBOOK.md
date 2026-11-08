@@ -2,7 +2,7 @@
 
 ## 状态与边界
 
-本候选以 GitHub PR #2 的完整 head `c0c8d89e6306148c3437b1ef18d74b72b13d8edb` 为基线整合。它只交付离线代码、配置和测试：没有安装 Jenkins、没有连接或修改目标机、没有拉取/部署生产镜像，也没有变更 Nginx、DNS、TLS 或 `www`。
+本工程候选从受保护 `main` 候选 `508c17a5ff3e5ae90779995046741b5c3a65c026`（reviewed tree `39a623361b2c82bec50b4f6d2391dbc9ac1b2d54`）派生。本节描述版本化设计边界，不是当前 PR、CI 或目标主机的执行状态；这些状态必须分别从候选精确 SHA 的 Checks 和 Operations 当次证据读取。该候选只交付离线代码、配置和测试：没有安装 Jenkins、没有连接或修改目标机、没有拉取/部署生产镜像，也没有变更 Nginx、DNS、TLS 或 `www`。
 
 GitHub Actions 是 PR/main 重型 CI 和受保护 `main` 的唯一 GHCR 发布者。Jenkins 只在既有 Ubuntu 主机的受限执行器上做轻量 CD、健康/version 校验和失败回滚；不运行 pnpm、Playwright、Docker build 或 push。旧 `.github/workflows/deploy.yml` 已删除，不能与 Jenkins 同时恢复或启用。
 
@@ -10,15 +10,15 @@ GitHub Actions 是 PR/main 重型 CI 和受保护 `main` 的唯一 GHCR 发布�
 
 1. `.github/workflows/checks.yml` 对 PR 和 `main` 运行 lint、format、unit、build、Playwright、容器健康和版本 smoke。PR job 只有 `contents: read`，不绑定 GHCR write、Jenkins、SSH 或部署凭据。
 2. 只有仓库 `Beginning-NEW/PlaneGameCode` 的 `refs/heads/main` push 且 `verify` 成功后，`publish` job 才获得 job-scoped `packages: write`。它重新核对当前 main SHA，按完整 SHA 构建、smoke、推送 GHCR，并解析不可变 manifest digest。
-3. Actions 上传唯一的 `release-candidate-<SHA>` artifact；其中记录 repository、ref、完整 SHA、workflow path、run id/attempt/number、应用 digest 和网关 digest。该 artifact 只是候选声明，不是部署授权。
-4. GitHub repository webhook 只把已完成的 `workflow_run` 的 `head_sha`、`id` 和 `run_attempt` 映射到 Jenkins 参数。参数一律视为不可信。`verify-candidate.sh` 用 GitHub API 重新验证成功结论、push/main、源仓库、workflow path、完整 SHA、artifact 内容和当前受保护 main HEAD。
-5. Jenkins 在第一次验证后进入 `plane-game-production-cd` 显式锁，部署前再次验证 API、artifact、SCM `FETCH_HEAD` 和资源门禁。`disableConcurrentBuilds` 与主机 `flock` 是额外两层串行保护；同一 workflow 单调递增的 Actions `run_number` 标记阻止旧候选覆盖新版本，`run_id` 只用于唯一标识 run。
+3. Actions 当前仍上传 `release-candidate-<SHA>` artifact，供人工作为诊断/追溯材料。它是非权威输出：Jenkins 不枚举、下载或解析该 artifact，artifact 的存在、内容、唯一性和保留期都不参与部署准入，也不能替代公开 API、SCM 或 registry 的实时校验。
+4. GitHub repository webhook 只把已完成的 `workflow_run` 的 `head_sha`、`id` 和 `run_attempt` 映射到 Jenkins 参数。参数一律视为不可信。`verify-candidate.sh` 以匿名公开 GitHub API 验证 exact-attempt 的 repository/head repository、workflow name/path、push event、main branch、完整 SHA、run id/attempt、completed/success 结论，并验证当前受保护 main HEAD；随后从公开 GHCR full-SHA tag 解析唯一 canonical `sha256` digest。
+5. Jenkins 在 `plane-game-production-cd` 显式锁内完成首次验证；`deploy-local.sh` 在匿名拉取前再次解析 full-SHA tag 并要求 digest 不变，拉取后由 `pre-promote-check.sh` 再次验证 exact-attempt、main ref、GHCR digest 与 SCM `FETCH_HEAD`，全部一致后才允许 promotion。`disableConcurrentBuilds` 与主机 `flock` 是额外两层串行保护；同一 workflow 单调递增的 Actions `run_number` 标记阻止旧候选覆盖新版本，`run_id` 只用于唯一标识 run。
 
-任何仓库/ref/SHA/run attempt/digest 不一致、main 已前移、artifact 过期或重复、API 不可用，都必须失败关闭，不能手工覆盖参数继续。
+任何仓库/ref/SHA/run id/run attempt/digest 不一致、main 或 full-SHA tag 已移动、公开 API/registry 不可用或限流、匿名拉取失败，都必须失败关闭，不能手工覆盖参数，也不能用 artifact、缓存或 Board-host 证据继续。
 
 ## 启用前资源 No-Go
 
-运维基线目前约为 7.1 GiB 总内存、2.9 GiB `MemAvailable`、无 swap、根盘约 41 GiB 可用，并承载 MSSQL、Postgres、Redis、new-api 等既有负载。2.9 GiB 低于入场线，因此当前禁止安装/启用 Jenkins 或执行部署。
+本节定义资源入场线，不陈述当前目标主机状态。是否允许安装、启用 Jenkins 或执行部署，必须由 Operations 对目标主机给出当次连续 24 小时证据和独立批准；历史容量快照不得作为当前 Go/No-Go 结论。
 
 只有 Operations 对同一主机给出以下连续 24 小时证据后，才可提出新的启用审批：
 
@@ -66,7 +66,7 @@ Jenkins checkout 必须是 candidate SHA，且 `origin/main` 与 GitHub API 当�
 每次真实演练至少记录：
 
 - Actions run URL/id/attempt/number、workflow path、repository、ref、完整 SHA、结论；
-- GHCR repository、应用 digest、gateway digest、artifact id/expiry；
+- GHCR repository、首次及 pre-pull/pre-promotion 复核的应用 digest、gateway digest；若保留 Actions artifact，可另记 artifact URL/id 作为非权威诊断证据，但不得作为准入或补缺证据；
 - Jenkins build URL/number、job/folder、agent identity、锁等待/获得时间；
 - 门禁 UTC、24 小时 p5 memory/p95 CPU、瞬时 memory、磁盘、cgroup limits、既有服务前后健康；
 - 部署前后 active/previous SHA、`/healthz`、首页、顶层 `version.json.sha`、Compose 状态；
@@ -83,7 +83,7 @@ Jenkins 首次启用前的回退是禁用/删除 main-only job 和 webhook，并
 - Release ordering uses the `run_number` returned by the public exact-attempt API, not `run_id`; `run_id` remains identity only. A run number may activate at most once: a later successful attempt may deploy only when that run number has never activated, and a rerun of an already active/recorded run number is rejected.
 - The image pulls finish before the final anonymous exact-attempt, main-ref, full-SHA-tag digest, and SCM `FETCH_HEAD` checks. The promoter is called only after those checks still bind the same SHA, run id, run attempt, run number, and immutable digests. Main or tag movement during a pull rejects the candidate.
 - The final loopback health and exact `version.json` checks are inside the promoter's rollback trap. A failure keeps Jenkins red and restores `previous_healthy_sha`; any incomplete source, route, marker, or health recovery emits `ALERT`.
-- The privileged `publish` job pins `actions/checkout` and `actions/upload-artifact` to reviewed full commit SHAs; moving major-version tags are forbidden in that job. The ordinary unprivileged `verify` job remains outside this publish-only pin contract.
+- The privileged `publish` job pins `actions/checkout` and `actions/upload-artifact` to reviewed full commit SHAs; moving major-version tags are forbidden in that job. The uploaded artifact remains non-authoritative and is never read by Jenkins. The ordinary unprivileged `verify` job remains outside this publish-only pin contract.
 - `resource-gate.sh` runs both before promotion and after the new route passes health/version checks. The post-CD invocation is the candidate-owned archived script and remains inside the promoter's rollback trap; a gate failure restores the previous healthy route and run-order markers, while its redacted numeric output is the instantaneous post-CD evidence.
 - The reviewable webhook controls are `ops/jenkins/webhook-admission.mjs`, `ops/jenkins/webhook-gateway.mjs`, `ops/jenkins/config/plane-game-webhook-gateway.service`, and `ops/jenkins/config/plane-game-job.groovy`. The CD Job DSL has no direct webhook trigger. API verification remains mandatory.
 - Public GHCR and Docker Hub pulls use no login and an empty temporary Docker config. There is no PAT, cached-evidence, or Board-host fallback.
