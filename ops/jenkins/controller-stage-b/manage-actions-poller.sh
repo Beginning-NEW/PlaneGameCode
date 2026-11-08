@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 set +x
 umask 077
 
@@ -12,8 +12,8 @@ fail() {
   exit 1
 }
 
-usage='usage: manage-actions-poller.sh activate|deactivate|prepare-restart|verify-restart|verify-disabled-restart'
-[[ $# -eq 1 ]] || fail "$usage"
+usage='usage: manage-actions-poller.sh activate|deactivate|prepare-restart|verify-restart|verify-disabled-restart [APPROVED_DIR]'
+[[ $# -ge 1 && $# -le 2 ]] || fail "$usage"
 action=$1
 case "$action" in
   activate|deactivate|prepare-restart|verify-restart|verify-disabled-restart) ;;
@@ -21,6 +21,8 @@ case "$action" in
 esac
 
 state_dir=$HOME/.local/state/plane-game-poller
+approved_dir=${2:-"$HOME/.config/plane-game/controller-stage-b"}
+selector_file=$approved_dir/cd-trigger-mode
 unit_dir=${XDG_CONFIG_HOME:-"$HOME/.config"}/systemd/user
 dropin_dir=$unit_dir/plane-game-actions-poller.service.d
 proof_file=$state_dir/activation-restart-proof
@@ -31,6 +33,10 @@ webhook_name=plane-game-webhook-gateway.service
 service_source=$profile_dir/systemd-user/$service_name
 timer_source=$profile_dir/systemd-user/$timer_name
 dropin_source=$profile_dir/systemd-user-activation/$service_name.d/10-trigger-mode.conf
+poller_mode_script=$profile_dir/set-poller-mode.groovy
+disabled_mode_script=$profile_dir/set-disabled-mode.groovy
+jenkins_url=http://127.0.0.1:18080
+admin_user=plane-admin
 
 require_regular_owner_mode() {
   local path=$1 expected_mode=$2 label=$3 actual
@@ -47,6 +53,76 @@ require_identity() {
   repo_root=$(cd -- "$profile_dir/../../.." && pwd -P)
   [[ "$repo_root" == "$HOME/plane-game-cd" ]] || fail 'package must be the real $HOME/plane-game-cd checkout'
 }
+
+require_approved_directory() {
+  [[ -d "$approved_dir" && ! -L "$approved_dir" ]] ||
+    fail 'controller approved directory must be a real directory'
+  [[ "$(stat -c '%u %a' -- "$approved_dir")" == "$PLANE_PREFLIGHT_UID 750" ]] ||
+    fail "controller approved directory owner/mode must be $PLANE_PREFLIGHT_UID/0750"
+}
+
+require_selector_value() {
+  local expected=$1 actual
+  require_regular_owner_mode "$selector_file" 640 trigger-selector
+  actual=$(tr -d '\r\n' <"$selector_file")
+  [[ "$actual" == "$expected" ]] || fail "persisted trigger selector must be $expected"
+}
+
+write_selector_value() {
+  local value=$1 temporary
+  [[ "$value" == poller || "$value" == disabled ]] || return 1
+  require_approved_directory
+  temporary=$(mktemp "$approved_dir/.cd-trigger-mode.XXXXXX")
+  printf '%s\n' "$value" >"$temporary"
+  chmod 0640 "$temporary"
+  setfacl --remove-all "$temporary"
+  setfacl -m "u:$JENKINS_MAPPED_HOST_UID:r--,m::r--,g::---,o::---" "$temporary"
+  sync -f "$temporary"
+  mv -f -- "$temporary" "$selector_file"
+  sync -f "$approved_dir"
+  require_selector_value "$value"
+}
+
+configure_jenkins_mode() (
+  set -euo pipefail
+  local mode=$1 script expected runtime_base scratch crumb_json crumb_field crumb_value response
+  case "$mode" in
+    poller)
+      script=$poller_mode_script
+      expected=$'selector=poller\njob_disabled=false'
+      ;;
+    disabled)
+      script=$disabled_mode_script
+      expected=$'selector=disabled\njob_disabled=true'
+      ;;
+    *) return 1 ;;
+  esac
+  [[ -f "$script" && ! -L "$script" ]] || return 1
+  runtime_base=${XDG_RUNTIME_DIR:-/run/user/$PLANE_PREFLIGHT_UID}
+  [[ -d "$runtime_base" && -w "$runtime_base" && ! -L "$runtime_base" ]] || return 1
+  scratch=$(mktemp -d "$runtime_base/plane-game-poller-mode.XXXXXX")
+  trap 'find "$scratch" -mindepth 1 -maxdepth 1 -type f -delete; rmdir -- "$scratch"' EXIT
+  crumb_json=$(curl --proxy '' --noproxy 127.0.0.1 --proto '=http' --max-redirs 0 \
+    --fail --silent --show-error --cookie-jar "$scratch/cookies" --user "$admin_user" \
+    "$jenkins_url/crumbIssuer/api/json")
+  crumb_field=$(printf '%s' "$crumb_json" | node -e '
+    let s=""; process.stdin.on("data", c => s += c); process.stdin.on("end", () => {
+      try { const v=JSON.parse(s); if(typeof v.crumbRequestField!=="string") process.exit(2); process.stdout.write(v.crumbRequestField); }
+      catch { process.exit(2); }
+    });')
+  crumb_value=$(printf '%s' "$crumb_json" | node -e '
+    let s=""; process.stdin.on("data", c => s += c); process.stdin.on("end", () => {
+      try { const v=JSON.parse(s); if(typeof v.crumb!=="string") process.exit(2); process.stdout.write(v.crumb); }
+      catch { process.exit(2); }
+    });')
+  printf 'header = "%s: %s"\n' "$crumb_field" "$crumb_value" >"$scratch/crumb.conf"
+  chmod 0600 "$scratch/crumb.conf"
+  response=$(curl --proxy '' --noproxy 127.0.0.1 --proto '=http' --max-redirs 0 \
+    --fail --silent --show-error --cookie "$scratch/cookies" --user "$admin_user" \
+    --config "$scratch/crumb.conf" --request POST --data-urlencode "script@$script" \
+    "$jenkins_url/scriptText")
+  [[ "$response" == "$expected" ]]
+)
 
 require_activation_state() {
   local actual
@@ -131,6 +207,7 @@ require_persistent_active_timer() {
   active=$(systemctl --user is-active "$timer_name" 2>/dev/null) || fail 'poller timer is not active'
   [[ "$active" == active ]] || fail 'poller timer is not active'
   effective_mode
+  require_selector_value poller
 }
 
 require_persistent_disabled_poller() {
@@ -157,6 +234,7 @@ require_persistent_disabled_poller() {
   [[ ! -e "$dropin_dir/10-trigger-mode.conf" && ! -L "$dropin_dir/10-trigger-mode.conf" ]] ||
     fail 'poller mode drop-in remains installed'
   effective_disabled_mode
+  require_selector_value disabled
 }
 
 ensure_unit_directory() {
@@ -243,7 +321,8 @@ write_verified_proof() {
   printf 'version=1\nbefore_boot_id=%s\nafter_boot_id=%s\nverified_at_epoch=%s\n' \
     "$before" "$after" "$now" >"$temporary"
   printf 'timer_enabled=enabled\ntimer_active=active\nlast_trigger_monotonic_usec=%s\n' "$last_trigger" >>"$temporary"
-  printf 'service_result=%s\nservice_status=%s\n' "$result" "$status" >>"$temporary"
+  printf 'service_result=%s\nservice_status=%s\nselector=poller\njob_disabled=false\n' \
+    "$result" "$status" >>"$temporary"
   chmod 0600 "$temporary"
   sync -f "$temporary"
   mv -f -- "$temporary" "$proof_file"
@@ -255,7 +334,7 @@ write_disabled_pre_restart_proof() {
   now=$(date -u +%s)
   temporary=$(mktemp "$state_dir/.deactivation-restart-proof.XXXXXX")
   printf 'version=1\nbefore_boot_id=%s\ndeactivated_at_epoch=%s\n' "$boot_id" "$now" >"$temporary"
-  printf 'timer_enabled=disabled\ntimer_active=inactive\nservice_enabled=static\nservice_active=inactive\nselector=disabled\n' >>"$temporary"
+  printf 'timer_enabled=disabled\ntimer_active=inactive\nservice_enabled=static\nservice_active=inactive\nselector=disabled\njob_disabled=true\n' >>"$temporary"
   chmod 0600 "$temporary"
   sync -f "$temporary"
   mv -f -- "$temporary" "$disabled_proof_file"
@@ -279,11 +358,26 @@ write_disabled_verified_proof() {
   temporary=$(mktemp "$state_dir/.deactivation-restart-proof.XXXXXX")
   printf 'version=1\nbefore_boot_id=%s\nafter_boot_id=%s\nverified_at_epoch=%s\n' \
     "$before" "$after" "$now" >"$temporary"
-  printf 'timer_enabled=disabled\ntimer_active=inactive\nservice_enabled=static\nservice_active=inactive\nselector=disabled\n' >>"$temporary"
+  printf 'timer_enabled=disabled\ntimer_active=inactive\nservice_enabled=static\nservice_active=inactive\nselector=disabled\njob_disabled=true\n' >>"$temporary"
   chmod 0600 "$temporary"
   sync -f "$temporary"
   mv -f -- "$temporary" "$disabled_proof_file"
   sync -f "$state_dir"
+}
+
+activation_pending=false
+rollback_partial_activation() {
+  set +e
+  systemctl --user stop "$timer_name" "$service_name" >/dev/null 2>&1
+  systemctl --user disable "$timer_name" "$service_name" >/dev/null 2>&1
+  if [[ -e "$dropin_dir/10-trigger-mode.conf" || -L "$dropin_dir/10-trigger-mode.conf" ]]; then
+    rm -f -- "$dropin_dir/10-trigger-mode.conf"
+    sync -f "$dropin_dir"
+  fi
+  systemctl --user daemon-reload >/dev/null 2>&1
+  write_selector_value disabled >/dev/null 2>&1
+  configure_jenkins_mode disabled >/dev/null 2>&1
+  set -e
 }
 
 require_identity
@@ -293,7 +387,15 @@ case "$action" in
     require_activation_state
     require_linger
     require_webhook_inactive
+    require_approved_directory
     ensure_unit_directory true
+    for source in "$poller_mode_script" "$disabled_mode_script"; do
+      [[ -f "$source" && ! -L "$source" ]] || fail "Jenkins mode source is unsafe: $source"
+    done
+    activation_pending=true
+    trap 'if [[ "$activation_pending" == true ]]; then rollback_partial_activation; fi' ERR
+    write_selector_value poller
+    configure_jenkins_mode poller
     atomic_install "$service_source" "$unit_dir/$service_name"
     atomic_install "$timer_source" "$unit_dir/$timer_name"
     atomic_install "$dropin_source" "$dropin_dir/10-trigger-mode.conf"
@@ -301,10 +403,13 @@ case "$action" in
     effective_mode
     systemctl --user enable --now "$timer_name"
     require_persistent_active_timer
-    printf 'actions poller timer persistently enabled; restart proof is still required before GO\n'
+    activation_pending=false
+    trap - ERR
+    printf 'Jenkins selector/job and actions poller timer enabled as one tuple; restart proof is still required before GO\n'
     ;;
   deactivate)
     ensure_state_directory
+    require_approved_directory
     ensure_unit_directory false
     atomic_install "$service_source" "$unit_dir/$service_name"
     atomic_install "$timer_source" "$unit_dir/$timer_name"
@@ -314,6 +419,8 @@ case "$action" in
     systemctl --user daemon-reload
     systemctl --user stop "$timer_name" "$service_name" >/dev/null 2>&1 || true
     systemctl --user disable "$timer_name" "$service_name" >/dev/null 2>&1 || true
+    write_selector_value disabled
+    configure_jenkins_mode disabled || fail 'cannot prove Jenkins selector disabled and job disabled'
     require_persistent_disabled_poller
     write_disabled_pre_restart_proof "$(read_boot_id)"
     printf 'actions poller persistently disabled and inactive; reboot, then run verify-disabled-restart\n'
@@ -343,6 +450,7 @@ case "$action" in
       fail 'cannot inspect poller service exit status'
     [[ "$service_result" == success && "$service_status" == 0 ]] ||
       fail 'post-restart timer invocation did not complete successfully'
+    configure_jenkins_mode poller || fail 'cannot prove post-restart Jenkins selector poller and job enabled'
     write_verified_proof "$before_boot_id" "$after_boot_id" "$last_trigger" "$service_result" "$service_status"
     printf 'actions poller persistent activation verified after host restart\n'
     ;;
@@ -351,6 +459,7 @@ case "$action" in
     before_boot_id=$(read_disabled_before_boot_id)
     after_boot_id=$(read_boot_id)
     [[ "$after_boot_id" != "$before_boot_id" ]] || fail 'host boot ID did not change; a disabled restart is not proven'
+    configure_jenkins_mode disabled || fail 'cannot prove post-restart Jenkins selector and job remain disabled'
     require_persistent_disabled_poller
     write_disabled_verified_proof "$before_boot_id" "$after_boot_id"
     printf 'actions poller persistent deactivation verified after host restart\n'

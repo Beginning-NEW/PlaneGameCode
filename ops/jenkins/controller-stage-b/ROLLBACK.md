@@ -7,11 +7,11 @@ The package is staged disabled. The controller run script, gateway user service,
 Disable order: job -> poller -> gateway -> controller.
 
 1. Disable `plane-game/main-cd` and write the exact line `plane-game/main-cd=disabled` to the approved `job-disabled.ack` file.
-2. Run `disable-stage-b.sh` as UID 1003. Before stopping the gateway or controller, it calls `manage-actions-poller.sh deactivate`. That idempotent path installs the reviewed disabled unit definitions, stops the poller timer and service, disables their persistent timer link, removes the `CD_TRIGGER_MODE=poller` drop-in, reloads the user manager, and refuses success unless the timer is exactly disabled/inactive, the service is static/inactive, and the effective selector is exactly `disabled`. This also closes a partially completed activation.
+2. Run `disable-stage-b.sh` as UID 1003. Before stopping the gateway or controller, it calls `manage-actions-poller.sh deactivate`. That idempotent path stops/disables the poller first, removes the mode drop-in, persists the approved controller selector as `disabled`, applies the fixed Jenkins script that proves the global selector disabled and job disabled, and refuses success unless the timer/service and both selector layers agree. This also closes a partially completed activation.
 3. The same script stops only the `plane-preflight` user service `plane-game-webhook-gateway.service`.
 4. The same script stops only `plane-game-jenkins-stage-b`. It never enables or starts a service and never uses a root-level systemd unit.
 
-`deactivate` records the current kernel boot ID only after the disabled state is proven. After reboot, run `manage-actions-poller.sh verify-disabled-restart`; it requires a changed boot ID and re-proves the timer/service inactive state, persistent timer disablement, absence of the poller drop-in, and the effective `CD_TRIGGER_MODE=disabled` selector. Rollback remains incomplete until this post-reboot proof succeeds.
+`deactivate` records the current kernel boot ID only after the disabled tuple is proven. After reboot, run `manage-actions-poller.sh verify-disabled-restart`; it requires a changed boot ID and re-proves timer/service inactive state, persistent timer disablement, absence of the drop-in, the persisted/live `CD_TRIGGER_MODE=disabled` selector, and the disabled job. Rollback remains incomplete until this post-reboot proof succeeds.
 
 ## Cold backup and restore
 

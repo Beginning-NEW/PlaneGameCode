@@ -1,4 +1,8 @@
-// Imported by JCasC. The job remains disabled until the separate enablement gate.
+// Imported by JCasC. The host-owned selector defaults disabled and is mounted read-only.
+def triggerMode = new File('/run/secrets/PLANE_CD_TRIGGER_MODE').text.trim()
+if (!(triggerMode in ['disabled', 'poller', 'webhook'])) {
+  throw new IllegalStateException('fixed trigger selector is invalid')
+}
 folder('plane-game') {
   authorization {
     userPermission('hudson.model.Item.Read', 'plane-webhook-gateway')
@@ -8,7 +12,7 @@ folder('plane-game') {
 
 pipelineJob('plane-game/main-cd') {
   description('Stage B main-only CD; trigger selector, job, poller timer, and webhook remain disabled pending separate gates.')
-  disabled(true)
+  disabled(triggerMode == 'disabled')
   parameters {
     stringParam('TRIGGER_SOURCE', '', 'poller or webhook; must match the reviewed global selector')
     stringParam('GITHUB_SHA', '', 'Exact successful main push SHA')

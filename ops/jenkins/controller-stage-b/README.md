@@ -61,7 +61,7 @@ Operations must execute this on a disposable Stage B rehearsal home before readi
 4. Disable it again, generate a new hash, start once, and prove readiness succeeds with the rotated password. Disable while deliberately retaining that same file, restart once, and prove exit `78` with no readiness marker; then remove the file and prove the persisted restart succeeds.
 5. Attach only the candidate SHA/tree, image ID, home-volume name, timestamps, exit codes, readiness results, and `stat` owner/mode to the Operations review. Never attach container logs from a password-entry session or any secret value.
 
-`init.groovy` clears the readiness marker first and recreates it only after SYSTEM has verified the admin ACL, the gateway ACL, the SYSTEM SSH credential, the public-source no-credential job, zero controller executors, the disabled inbound port, and the bounded SSH agent. On a fresh home, JCasC Job DSL can write the new job files after Jenkins loads its in-memory item catalog; the init script reloads that catalog once before checking the live job. The project-level matrix strategy and explicit user grants give the gateway only folder/job Read and job Build. `healthcheck.sh` requires the authorization/bootstrap proof as well as login `200` and anonymous API `403`; those HTTP codes alone cannot make the controller healthy.
+`init.groovy` clears the readiness marker first and recreates it only after SYSTEM has verified the admin ACL, the gateway/poller ACLs, the SYSTEM SSH credential, the public-source no-credential job, zero controller executors, the disabled inbound port, the bounded SSH agent, and exact agreement among the persisted trigger selector, live global selector, and job enabled state. On a fresh home, JCasC Job DSL can write the new job files after Jenkins loads its in-memory item catalog; the init script reloads that catalog once before checking the live job. `healthcheck.sh` requires this authorization/bootstrap proof as well as login `200` and anonymous API `403`; those HTTP codes alone cannot make the controller healthy.
 
 ## SSH Build Agent and public-source CD
 
@@ -74,6 +74,7 @@ No credential value is committed. JCasC strict secret resolution is enabled; eve
 - `agent-host`;
 - `agent-host-key`, containing one fixed `ssh-ed25519` public host key;
 - `agent-private-key` for SYSTEM-scope `plane-game-agent-ssh`.
+- `cd-trigger-mode`, default-created as `disabled`; only `disabled`, `poller`, or `webhook` is accepted.
 
 The public repository is checked out by exact anonymous HTTPS URL with no credential ID. Actions proof uses the unauthenticated exact-attempt and main-ref APIs. GHCR and Docker Hub pulls use an empty temporary Docker config, no login, and digest-only image references; no GitHub or registry credential object or host file is permitted.
 
@@ -83,7 +84,7 @@ The approved directory must be owned by UID 1003 with mode `0750`; each mounted 
 
 `systemd-user/plane-game-webhook-gateway.service` is a `plane-preflight` user-service template. It has no `[Install]` section, no `User=`/`Group=`, no root-level target, `Restart=no`, the UID-1003 rootless Docker socket, loopback Jenkins only, and approved credential-file references. The repository's existing root-level gateway template is not a Stage B enablement path.
 
-The JCasC Job DSL creates `plane-game/main-cd` with `disabled(true)` and no webhook trigger. See `ROLLBACK.md` for deterministic job -> gateway -> controller disablement, checksum-verified cold backup/restore, first-release no-Jenkins/no-app rollback, and later last-healthy selection.
+The JCasC Job DSL creates `plane-game/main-cd` with no webhook trigger and derives its enabled state from the same read-only `PLANE_CD_TRIGGER_MODE` file used by the global selector. A missing or unknown value fails startup; the first controller run creates only the reviewed `disabled` value. See `ROLLBACK.md` for deterministic job -> poller -> gateway -> controller disablement, checksum-verified cold backup/restore, first-release no-Jenkins/no-app rollback, and later last-healthy selection.
 
 JCasC also creates the fixed, non-interactive `plane-webhook-gateway` local principal. It receives only global `Overall/Read`, folder/job `Item/Read`, and job `Item/Build`; startup fails if it has Administer, Script Console, Credentials/View, folder Configure, job Configure, or job Delete.
 
@@ -102,9 +103,20 @@ bash ops/jenkins/controller-stage-b/manage-gateway-token.sh revoke
 
 ## Separately approved persistent poller activation
 
-The packaged poller service remains disabled by default. The timer has an install target so a later approved Operations action can persist it under `timers.target`; the reviewed poller-mode override lives separately under `systemd-user-activation/` and is installed only by `manage-actions-poller.sh activate`. That helper also requires user linger, mutual exclusion with the webhook service, the canonical checkout, and the complete owner-only poller state before it enables the timer. Rollback calls `manage-actions-poller.sh deactivate` before stopping the gateway/controller; the idempotent path handles partial activation, restores the disabled units, removes the poller selector, and requires `verify-disabled-restart` after a boot-ID change.
+The packaged poller service remains disabled by default. The oneshot is bounded to 192 MiB, 25% CPU, 32 tasks, and 240 seconds, with unit-local journal rate limiting. The timer has an install target; the reviewed poller override is installed only by `manage-actions-poller.sh activate`. That helper requires user linger, an inactive gateway, the canonical checkout, the complete owner-only poller state, and the approved controller directory. It persists selector `poller`, verifies the live Jenkins selector and enabled job with a fixed script, and only then enables the timer. Any partial failure restores disabled state. Rollback invokes the same helper before stopping the gateway/controller.
 
-Before any GO, Operations must use the helper's `prepare-restart` action, restart the target host, wait for the five-minute timer, and run `verify-restart`. Verification requires a changed kernel boot ID plus a still-enabled/active timer and a successful poller invocation in the new boot. A one-shot `systemctl start` or environment override is not accepted. See `../PRIVATE-POLLER.md` for the exact sequence. This repository change does not run that sequence or enable a runtime.
+The poller credential helper has one locked lifecycle and never carries token values in argv or environment:
+
+```sh
+bash ops/jenkins/controller-stage-b/create-poller-token.sh create
+bash ops/jenkins/controller-stage-b/create-poller-token.sh rotate
+bash ops/jenkins/controller-stage-b/create-poller-token.sh prune
+bash ops/jenkins/controller-stage-b/create-poller-token.sh revoke
+```
+
+The ledger hard-stops at 8 MiB. Under the shared lock, `maintain-poller-ledger.sh` checkpoints at 4 MiB, keeps current rate/terminal tuple state, and retains at most four hashed archives. Run it only in the separately approved maintenance window while the poller/build path is idle.
+
+Before any GO, Operations must use `prepare-restart`, restart the target, wait for the five-minute timer, and run `verify-restart`. Verification requires a changed boot ID, the persisted/live selector `poller`, job enabled, timer enabled/active, and a successful current-boot invocation. A 304/no-candidate success with the job disabled is rejected. See `../PRIVATE-POLLER.md`; this repository change does not run that sequence or enable a runtime.
 
 ## Offline verification
 

@@ -10,7 +10,9 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   renameSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
   writeSync,
@@ -19,6 +21,8 @@ import { basename, dirname, join } from 'node:path';
 
 const ZERO_HASH = '0'.repeat(64);
 const MAX_LEDGER_BYTES = 8 * 1024 * 1024;
+const COMPACT_AT_BYTES = 4 * 1024 * 1024;
+const ARCHIVE_LIMIT = 4;
 const WINDOW_MS = 60 * 60 * 1000;
 const REQUEST_LIMIT = 30;
 const CANDIDATE_RESERVATION = 15;
@@ -37,6 +41,10 @@ function canonical(value) {
 
 function digest(value) {
   return createHash('sha256').update(canonical(value)).digest('hex');
+}
+
+function textDigest(value) {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function clone(value) {
@@ -60,6 +68,33 @@ function assertDirectory(path, uid) {
     (metadata.uid !== uid || (metadata.mode & 0o777) !== 0o700);
   if (!metadata.isDirectory() || metadata.isSymbolicLink() || permissionsInvalid) {
     throw ledgerError('ledger_directory_unsafe');
+  }
+}
+
+function ensureDirectory(path, uid) {
+  if (!existsSync(path)) mkdirSync(path, { mode: 0o700, recursive: false });
+  assertDirectory(path, uid);
+}
+
+function pruneArchives(root, retain, uid) {
+  const archives = readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^[1-9][0-9]*-[0-9a-f]{16}$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort((left, right) => Number(left.split('-')[0]) - Number(right.split('-')[0]));
+  while (archives.length > retain) {
+    const name = archives.shift();
+    const directory = join(root, name);
+    assertDirectory(directory, uid);
+    const files = readdirSync(directory).sort();
+    if (files.join(',') !== 'journal.ndjson,manifest.json,snapshot.json') {
+      throw ledgerError('ledger_archive_unsafe');
+    }
+    for (const file of files) {
+      const path = join(directory, file);
+      assertRegular(lstatSync(path), uid);
+      unlinkSync(path);
+    }
+    rmdirSync(directory);
   }
 }
 
@@ -283,6 +318,80 @@ export class SecureLedger {
     return result;
   }
 
+  compact({ force = false, archiveLimit = ARCHIVE_LIMIT } = {}) {
+    this.load();
+    if (!Number.isSafeInteger(archiveLimit) || archiveLimit < 1 || archiveLimit > ARCHIVE_LIMIT) {
+      throw ledgerError('ledger_archive_limit_invalid');
+    }
+    const journalMetadata = lstatSync(this.journalPath);
+    assertRegular(journalMetadata, this.uid);
+    if (!force && journalMetadata.size < COMPACT_AT_BYTES) {
+      return { compacted: false, bytes: journalMetadata.size, seq: this.seq, head: this.head };
+    }
+    if (this.seq === 0) return { compacted: false, bytes: 0, seq: 0, head: this.head };
+
+    const journalText = readRegular(this.journalPath, this.uid);
+    const snapshotText = readRegular(this.snapshotPath, this.uid);
+    const previousSeq = this.seq;
+    const previousHead = this.head;
+    const archiveRoot = join(this.root, 'archives');
+    ensureDirectory(archiveRoot, this.uid);
+    const archiveName = `${previousSeq}-${previousHead.slice(0, 16)}`;
+    const archiveDirectory = join(archiveRoot, archiveName);
+    if (existsSync(archiveDirectory)) throw ledgerError('ledger_archive_exists');
+    mkdirSync(archiveDirectory, { mode: 0o700, recursive: false });
+    assertDirectory(archiveDirectory, this.uid);
+    atomicWrite(join(archiveDirectory, 'journal.ndjson'), journalText, this.uid);
+    atomicWrite(join(archiveDirectory, 'snapshot.json'), snapshotText, this.uid);
+
+    const nowMs = this.now();
+    const nextState = clone(this.state);
+    assertClock(nextState, nowMs);
+    const payload = {
+      archive: archiveName,
+      previousSeq,
+      previousHead,
+      journalSha256: textDigest(journalText),
+      snapshotSha256: textDigest(snapshotText),
+    };
+    atomicWrite(join(archiveDirectory, 'manifest.json'), `${canonical({
+      version: 1,
+      compactedAtMs: nowMs,
+      ...payload,
+    })}\n`, this.uid);
+    fsyncDirectory(archiveDirectory);
+    fsyncDirectory(archiveRoot);
+
+    const unsigned = {
+      version: 1,
+      seq: 1,
+      atMs: nowMs,
+      type: 'ledger_checkpoint',
+      payload,
+      state: nextState,
+      prevHash: ZERO_HASH,
+    };
+    const checkpoint = { ...unsigned, hash: digest(unsigned) };
+    atomicWrite(this.journalPath, `${canonical(checkpoint)}\n`, this.uid);
+    atomicWrite(this.snapshotPath, `${canonical({
+      version: 1,
+      seq: 1,
+      head: checkpoint.hash,
+      state: nextState,
+    })}\n`, this.uid);
+    this.load();
+    pruneArchives(archiveRoot, archiveLimit, this.uid);
+    fsyncDirectory(archiveRoot);
+    return {
+      compacted: true,
+      archive: archiveName,
+      previousSeq,
+      previousHead,
+      seq: this.seq,
+      head: this.head,
+    };
+  }
+
   recordRequest(reservationId = null) {
     return this.mutate('request_reserved', { reservationId }, (state) => {
       const nowMs = this.now();
@@ -474,4 +583,7 @@ export const ledgerInternals = {
   initialState,
   WINDOW_MS,
   REQUEST_LIMIT,
+  MAX_LEDGER_BYTES,
+  COMPACT_AT_BYTES,
+  ARCHIVE_LIMIT,
 };

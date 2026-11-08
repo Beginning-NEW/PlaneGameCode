@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -130,6 +130,36 @@ test('secure ledger detects journal truncation and recovers an fsynced journal a
   const journal = await readFile(join(root, 'journal.ndjson'));
   await writeFile(join(root, 'journal.ndjson'), journal.subarray(0, journal.length - 2));
   assert.throws(() => new SecureLedger(root, { now: () => NOW }), { code: 'journal_truncated' });
+});
+
+test('ledger checkpoint preserves terminal identities and keeps a bounded verified archive set', async (t) => {
+  const { root, ledger } = await ledgerFixture(t);
+  ledger.recordRequest();
+  ledger.admitCandidate(TRIGGER_ID, 58);
+  ledger.transitionPoller(TRIGGER_ID, 'observed', {
+    candidate: { triggerId: TRIGGER_ID, sha: SHA, runId: RUN_ID, runAttempt: ATTEMPT },
+  });
+  ledger.transitionPoller(TRIGGER_ID, 'failed', { errorCode: 'test_terminal' });
+  const before = ledger.getState();
+  const compacted = ledger.compact({ force: true });
+  assert.equal(compacted.compacted, true);
+  const recovered = new SecureLedger(root, { now: () => NOW });
+  assert.deepEqual(recovered.getState(), before);
+  assert.throws(() => recovered.transitionPoller(TRIGGER_ID, 'observed'), {
+    code: 'poller_transition_invalid',
+  });
+  const checkpoint = JSON.parse((await readFile(join(root, 'journal.ndjson'), 'utf8')).trim());
+  assert.equal(checkpoint.type, 'ledger_checkpoint');
+  assert.equal(checkpoint.payload.previousHead, compacted.previousHead);
+  assert.match(checkpoint.payload.journalSha256, /^[0-9a-f]{64}$/);
+
+  for (let count = 0; count < 5; count += 1) recovered.compact({ force: true });
+  const archives = await readdir(join(root, 'archives'));
+  assert.equal(archives.length, 4);
+  for (const archive of archives) {
+    const files = (await readdir(join(root, 'archives', archive))).sort();
+    assert.deepEqual(files, ['journal.ndjson', 'manifest.json', 'snapshot.json']);
+  }
 });
 
 test('secure ledger rejects symlink replacement and a different service UID', { skip: process.platform === 'win32' }, async (t) => {

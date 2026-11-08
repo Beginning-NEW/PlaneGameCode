@@ -9,7 +9,7 @@ jenkins:
     - envVars:
         env:
           - key: "CD_TRIGGER_MODE"
-            value: "disabled"
+            value: "${trim:${readFile:/run/secrets/PLANE_CD_TRIGGER_MODE}}"
   securityRealm:
     local:
       allowsSignup: false

@@ -8,6 +8,7 @@ import hudson.model.User
 import hudson.plugins.sshslaves.SSHLauncher
 import hudson.plugins.sshslaves.verifiers.ManuallyProvidedKeyVerificationStrategy
 import hudson.security.HudsonPrivateSecurityRealm
+import hudson.slaves.EnvironmentVariablesNodeProperty
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -27,6 +28,14 @@ def controller = Jenkins.get()
 def home = controller.getRootDir().toPath()
 def readyFile = home.resolve('.stage-b-ready')
 Files.deleteIfExists(readyFile)
+def triggerModeFile = Path.of('/run/secrets/PLANE_CD_TRIGGER_MODE')
+if (!Files.isRegularFile(triggerModeFile, LinkOption.NOFOLLOW_LINKS) || Files.size(triggerModeFile) > 16L) {
+  fail('fixed trigger selector file is missing or oversized')
+}
+def triggerMode = Files.readString(triggerModeFile, StandardCharsets.US_ASCII).trim()
+if (!(triggerMode in ['disabled', 'poller', 'webhook'])) {
+  fail('fixed trigger selector value is invalid')
+}
 
 controller.setNumExecutors(0)
 controller.setSlaveAgentPort(-1)
@@ -135,6 +144,12 @@ if (job == null || controller.getItem('plane-game') == null) {
   println('Stage B reloaded the JCasC-created job catalog')
   job = controller.getItemByFullName('plane-game/main-cd')
 }
+def globalEnvironment = controller.getGlobalNodeProperties().getAll(EnvironmentVariablesNodeProperty.class)
+if (globalEnvironment.size() != 1 ||
+    globalEnvironment[0].getEnvVars().get('CD_TRIGGER_MODE') != triggerMode) {
+  fail('live global trigger selector differs from the persisted selector')
+}
+def expectedJobDisabled = triggerMode == 'disabled'
 if (!controller.getACL().hasPermission2(adminAuth, Jenkins.ADMINISTER)) {
   fail('fixed local admin lacks Overall/Administer')
 }
@@ -154,21 +169,21 @@ if (!controller.getACL().hasPermission2(pollerAuth, Jenkins.READ) ||
 def jobFolder = controller.getItem('plane-game')
 if (jobFolder == null || !jobFolder.getACL().hasPermission2(gatewayAuth, Item.READ) ||
     jobFolder.getACL().hasPermission2(gatewayAuth, Item.CONFIGURE) ||
-    job == null || !job.isDisabled() ||
+    job == null || job.isDisabled() != expectedJobDisabled ||
     !job.getACL().hasPermission2(gatewayAuth, Item.READ) ||
     !job.getACL().hasPermission2(gatewayAuth, Item.BUILD) ||
     job.getACL().hasPermission2(gatewayAuth, Item.CONFIGURE) ||
     job.getACL().hasPermission2(gatewayAuth, Item.DELETE)) {
-  fail('gateway job authorization or disabled state is invalid')
+  fail('gateway job authorization or selector state is invalid')
 }
 if (jobFolder == null || !jobFolder.getACL().hasPermission2(pollerAuth, Item.READ) ||
     jobFolder.getACL().hasPermission2(pollerAuth, Item.CONFIGURE) ||
-    job == null || !job.isDisabled() ||
+    job == null || job.isDisabled() != expectedJobDisabled ||
     !job.getACL().hasPermission2(pollerAuth, Item.READ) ||
     !job.getACL().hasPermission2(pollerAuth, Item.BUILD) ||
     job.getACL().hasPermission2(pollerAuth, Item.CONFIGURE) ||
     job.getACL().hasPermission2(pollerAuth, Item.DELETE)) {
-  fail('poller job authorization or disabled state is invalid')
+  fail('poller job authorization or selector state is invalid')
 }
 
 def readyTemp = home.resolve('.stage-b-ready.tmp')

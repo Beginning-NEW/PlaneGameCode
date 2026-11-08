@@ -41,6 +41,23 @@ validate_single_line() {
     fail "approved secret must contain one non-empty line: $name"
 }
 
+ensure_trigger_selector() {
+  local path=$1 temporary
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
+    temporary=$(mktemp "$(dirname -- "$path")/.cd-trigger-mode.XXXXXX")
+    printf 'disabled\n' >"$temporary"
+    chmod 0640 "$temporary"
+    setfacl --remove-all "$temporary"
+    setfacl -m "u:$JENKINS_MAPPED_HOST_UID:r--,m::r--,g::---,o::---" "$temporary"
+    sync -f "$temporary"
+    mv -f -- "$temporary" "$path"
+    sync -f "$(dirname -- "$path")"
+  fi
+  validate_secret_file "$path" cd-trigger-mode
+  validate_single_line "$path" cd-trigger-mode
+  grep -Eq '^(disabled|poller|webhook)$' "$path" || fail 'trigger selector value is invalid'
+}
+
 image_id_file=${1:?usage: run-controller.sh IMAGE_ID_FILE APPROVED_DIR}
 approved_dir_input=${2:?usage: run-controller.sh IMAGE_ID_FILE APPROVED_DIR}
 [[ "$(id -u)" == "$PLANE_PREFLIGHT_UID" ]] || fail 'must run as UID 1003'
@@ -56,16 +73,19 @@ approved_dir=$(cd -- "$approved_dir_input" && pwd -P)
 [[ "$(stat -c '%u' -- "$approved_dir")" == "$PLANE_PREFLIGHT_UID" ]] || fail 'approved directory owner must be UID 1003'
 [[ "$(stat -c '%a' -- "$approved_dir")" == 750 ]] || fail 'approved directory mode must be 0750 with a narrow Jenkins ACL'
 validate_jenkins_acl "$approved_dir" approved-directory 'rwx' 'r-x'
+ensure_trigger_selector "$approved_dir/cd-trigger-mode"
 
 secret_names=(
   agent-host
   agent-host-key
   agent-private-key
+  cd-trigger-mode
 )
 secret_destinations=(
   /run/secrets/PLANE_AGENT_HOST
   /run/secrets/PLANE_AGENT_ED25519_HOST_KEY
   /run/secrets/PLANE_AGENT_PRIVATE_KEY
+  /run/secrets/PLANE_CD_TRIGGER_MODE
 )
 mount_args=()
 for index in "${!secret_names[@]}"; do

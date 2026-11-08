@@ -159,7 +159,8 @@ test('SSH agent and gateway use fixed identity, file references, and disabled de
   assert.match(casc, /manuallyProvidedKeyVerificationStrategy:/);
   assert.match(casc, /PLANE_AGENT_PRIVATE_KEY/);
   assert.match(casc, /PLANE_AGENT_ED25519_HOST_KEY/);
-  assert.match(job, /disabled\(true\)/);
+  assert.match(job, /PLANE_CD_TRIGGER_MODE/);
+  assert.match(job, /disabled\(triggerMode == 'disabled'\)/);
   assert.match(job, /Item[.]Read', 'plane-webhook-gateway'/);
   assert.match(job, /Item[.]Build', 'plane-webhook-gateway'/);
   assert.doesNotMatch(job, /triggers\s*\{|githubPush\(\)/);
@@ -193,7 +194,9 @@ test('negative contract rejects exposure, root units, executors, enabled jobs, b
   });
   assert.throws(check({ runtime: { ...runtime, controller: { ...runtime.controller, hostBinding: '0.0.0.0:18080:8080' } } }), /loopback-only/);
   assert.throws(check({ runtime: { ...runtime, controller: { ...runtime.controller, executors: 1 } } }), /executor/);
-  assert.throws(check({ job: job.replace('disabled(true)', 'disabled(false)') }), /default disabled/);
+  assert.throws(check({
+    job: job.replace("disabled(triggerMode == 'disabled')", 'disabled(false)'),
+  }), /job enablement/);
   assert.throws(check({ gateway: `${gateway}\n[Install]\nWantedBy=default.target\n` }), /root-level or enableable/);
   assert.throws(check({ casc: casc.replace('manuallyProvidedKeyVerificationStrategy', 'nonVerifyingKeyVerificationStrategy') }), /host-key/);
   assert.throws(check({ casc: casc.replace('CPUQuota=25%', 'CPUQuota=50%') }), /SSH remoting JCasC/);

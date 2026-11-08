@@ -61,8 +61,10 @@ export class JenkinsCredentialProvider {
         throw jenkinsError('credential_unavailable');
       }
       const value = JSON.parse(readFileSync(fd, 'utf8'));
-      if (value?.version !== 1 || Object.keys(value).sort().join(',') !== 'token,username,version' ||
-          value.username !== 'plane-actions-poller' || !/^[0-9A-Za-z]{16,256}$/.test(value.token ?? '')) {
+      if (value?.version !== 1 || Object.keys(value).sort().join(',') !== 'token,username,uuid,version' ||
+          value.username !== 'plane-actions-poller' || !/^[0-9A-Za-z]{16,256}$/.test(value.token ?? '') ||
+          !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(
+            value.uuid ?? '')) {
         throw jenkinsError('credential_unavailable');
       }
       return { username: value.username, token: value.token };

@@ -102,7 +102,12 @@ test('Jenkins Basic auth exists only in the request header and credentials remai
   const directory = join(parent, 'credentials');
   const path = join(directory, 'jenkins-poller-api-token');
   await mkdir(directory, { mode: 0o700 });
-  await writeFile(path, JSON.stringify({ version: 1, username: 'plane-actions-poller', token: 'T'.repeat(32) }), { mode: 0o600 });
+  await writeFile(path, JSON.stringify({
+    version: 1,
+    username: 'plane-actions-poller',
+    token: 'T'.repeat(32),
+    uuid: '11111111-1111-4111-8111-111111111111',
+  }), { mode: 0o600 });
   await chmod(directory, 0o700);
   await chmod(path, 0o600);
   const seen = [];
@@ -131,7 +136,12 @@ test('Jenkins credentials reject writable or symlinked ancestor components befor
   await mkdir(credentials, { recursive: true, mode: 0o700 });
   await chmod(unsafe, 0o770);
   const token = join(credentials, 'jenkins-api-token');
-  await writeFile(token, JSON.stringify({ version: 1, username: 'plane-actions-poller', token: 'X'.repeat(32) }), { mode: 0o600 });
+  await writeFile(token, JSON.stringify({
+    version: 1,
+    username: 'plane-actions-poller',
+    token: 'X'.repeat(32),
+    uuid: '22222222-2222-4222-8222-222222222222',
+  }), { mode: 0o600 });
   assert.throws(() => new JenkinsCredentialProvider(token).get(), { code: 'credential_unavailable' });
 
   await chmod(unsafe, 0o700);

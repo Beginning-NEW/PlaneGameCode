@@ -33,7 +33,15 @@ test('poller package is disabled, five-minute bounded, and mutually exclusive wi
   assert.equal(manifest.poller.requestCeilingPerRollingHour, 30);
   assert.equal(manifest.poller.candidateCeilingPerRollingHour, 1);
   assert.equal(manifest.poller.candidateGraphRequests, 16);
-  assert.match(casc, /key: "CD_TRIGGER_MODE"\s+value: "disabled"/);
+  assert.deepEqual(manifest.poller.limits, {
+    memoryMax: '192M', cpuQuota: '25%', tasksMax: 32,
+    timeoutStartSec: '240s', runtimeMaxSec: '240s',
+    logRateLimitIntervalSec: '60s', logRateLimitBurst: 50,
+  });
+  assert.deepEqual(manifest.poller.ledgerRetention, {
+    compactAtBytes: 4194304, hardMaxBytes: 8388608, archiveCount: 4,
+  });
+  assert.match(casc, /key: "CD_TRIGGER_MODE"[\s\S]*PLANE_CD_TRIGGER_MODE/);
   assert.match(service, /Environment=CD_TRIGGER_MODE=disabled/);
   assert.match(webhookService, /Environment=CD_TRIGGER_MODE=disabled/);
   for (const unit of [service, webhookService]) {
@@ -45,6 +53,9 @@ test('poller package is disabled, five-minute bounded, and mutually exclusive wi
   assert.match(timer, /^\[Install\]\nWantedBy=timers[.]target$/m);
   assert.match(activationDropin, /Environment=CD_TRIGGER_MODE=poller/);
   assert.match(service, /flock --no-fork --nonblock %h\/.local\/state\/plane-game-poller\/\.shared\.lock/);
+  for (const limit of ['MemoryMax=192M', 'CPUQuota=25%', 'TasksMax=32',
+    'TimeoutStartSec=240s', 'RuntimeMaxSec=240s', 'LogRateLimitIntervalSec=60s',
+    'LogRateLimitBurst=50']) assert.match(service, new RegExp(limit));
   assert.match(pipeline, /flock --no-fork --nonblock "\$PLANE_POLLER_STATE_DIR\/\.shared\.lock"/);
   assert.match(localDeploy, /state_call\(\)[\s\S]*flock --no-fork --nonblock "\$state_lock"/);
   assert.match(promote, /state_call\(\)[\s\S]*flock --no-fork --nonblock "\$PLANE_LEDGER_LOCK_FILE"/);
@@ -57,7 +68,8 @@ test('Jenkins job has dedicated poller least privilege and mutually exclusive pa
   for (const parameter of ['TRIGGER_SOURCE', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'TRIGGER_ID', 'WEBHOOK_DELIVERY_UUID']) {
     assert.match(job, new RegExp(`stringParam\\('${parameter}'`));
   }
-  assert.match(job, /disabled\(true\)/);
+  assert.match(job, /PLANE_CD_TRIGGER_MODE/);
+  assert.match(job, /disabled\(triggerMode == 'disabled'\)/);
 });
 
 test('disabled or missing mode refuses both executable trigger paths before startup', () => {
@@ -80,7 +92,9 @@ test('disabled or missing mode refuses both executable trigger paths before star
 test('credential helper writes one file-backed username/token document without argv or environment secrets', () => {
   assert.match(tokenHelper, /poller_user=plane-actions-poller/);
   assert.match(tokenHelper, /\.local\/state\/plane-game-poller\/jenkins-api-token/);
-  assert.match(tokenHelper, /"username":"%s","token":"%s"/);
+  assert.match(tokenHelper, /create\|rotate\|prune\|revoke/);
+  assert.match(tokenHelper, /"username":"%s","token":"%s","uuid":"%s"/);
+  assert.match(tokenHelper, /flock -x 9/);
   assert.match(tokenHelper, /sync -f "\$token_tmp"[\s\S]*mv -f -- "\$token_tmp" "\$token_file"/);
   assert.match(tokenHelper, /curl --proxy '' --noproxy 127[.]0[.]0[.]1 --proto '=http' --max-redirs 0/);
   assert.doesNotMatch(tokenHelper, /--user\s+[^\n]*:|export\s+[^\n]*(TOKEN|PASSWORD|SECRET)/i);

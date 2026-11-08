@@ -76,6 +76,20 @@
     "credentialFile": "~/.local/state/plane-game-poller/jenkins-api-token",
     "globalPermissions": ["Overall/Read"],
     "jobPermissions": ["Job/Read", "Job/Build"],
+    "limits": {
+      "memoryMax": "192M",
+      "cpuQuota": "25%",
+      "tasksMax": 32,
+      "timeoutStartSec": "240s",
+      "runtimeMaxSec": "240s",
+      "logRateLimitIntervalSec": "60s",
+      "logRateLimitBurst": 50
+    },
+    "ledgerRetention": {
+      "compactAtBytes": 4194304,
+      "hardMaxBytes": 8388608,
+      "archiveCount": 4
+    },
     "requestCeilingPerRollingHour": 30,
     "candidateCeilingPerRollingHour": 1,
     "candidateGraphRequests": 16

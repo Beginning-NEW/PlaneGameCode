@@ -13,6 +13,15 @@ WorkingDirectory=%h/plane-game-cd
 RuntimeDirectory=plane-game-poller
 RuntimeDirectoryMode=0700
 UMask=0077
+MemoryMax=192M
+CPUQuota=25%
+TasksMax=32
+TimeoutStartSec=240s
+RuntimeMaxSec=240s
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=50
 UnsetEnvironment=HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy NODE_OPTIONS NODE_USE_ENV_PROXY
 Environment=CD_TRIGGER_MODE=disabled
 Environment=PLANE_POLLER_STATE_DIR=%h/.local/state/plane-game-poller

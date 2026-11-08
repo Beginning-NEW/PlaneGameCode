@@ -29,6 +29,16 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
       manifest.poller?.credentialFile !== '~/.local/state/plane-game-poller/jenkins-api-token') {
     throw new Error('poller budget/default contract changed');
   }
+  if (manifest.poller?.limits?.memoryMax !== '192M' || manifest.poller?.limits?.cpuQuota !== '25%' ||
+      manifest.poller?.limits?.tasksMax !== 32 || manifest.poller?.limits?.timeoutStartSec !== '240s' ||
+      manifest.poller?.limits?.runtimeMaxSec !== '240s' ||
+      manifest.poller?.limits?.logRateLimitIntervalSec !== '60s' ||
+      manifest.poller?.limits?.logRateLimitBurst !== 50 ||
+      manifest.poller?.ledgerRetention?.compactAtBytes !== 4194304 ||
+      manifest.poller?.ledgerRetention?.hardMaxBytes !== 8388608 ||
+      manifest.poller?.ledgerRetention?.archiveCount !== 4) {
+    throw new Error('poller runtime or retention bounds changed');
+  }
   const remoting = manifest.agent?.remoting;
   const remotingPrefix = "exec systemd-run --user --scope --quiet -p MemoryMax=384M -p CPUQuota=25% /bin/sh -c '";
   if (remoting?.prefixStartSlaveCmd !== remotingPrefix || remoting?.suffixStartSlaveCmd !== "'" ||
@@ -74,7 +84,8 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(casc, /privateKeySource:\s*directEntry:/, 'JCasC SSH private-key source must use directEntry');
   requireMatch(casc, /manuallyProvidedKeyVerificationStrategy:/, 'fixed host-key verifier missing');
   requireMatch(casc, /sshHostKeyVerificationStrategy:/, 'SSH launcher host-key field is missing');
-  requireMatch(casc, /key: "CD_TRIGGER_MODE"\s+value: "disabled"/, 'global trigger selector must default disabled');
+  requireMatch(casc, /key: "CD_TRIGGER_MODE"[\s\S]*PLANE_CD_TRIGGER_MODE/,
+    'global trigger selector must use the fixed persisted file');
   forbid(casc, /\s+hostKeyVerificationStrategy:/, 'obsolete SSH launcher host-key field is unsupported');
   requireMatch(init, /getSshHostKeyVerificationStrategy\(\)/, 'SSH launcher readiness check uses an obsolete getter');
   requireMatch(init, /getPrefixStartSlaveCmd\(\)/, 'SSH launcher readiness must verify the bounded command');
@@ -88,6 +99,7 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
     'PLANE_AGENT_HOST',
     'PLANE_AGENT_ED25519_HOST_KEY',
     'PLANE_AGENT_PRIVATE_KEY',
+    'PLANE_CD_TRIGGER_MODE',
   ]) {
     if (!casc.includes(`\${trim:\${readFile:/run/secrets/${source}}}`)) {
       throw new Error(`strict file secret source missing for ${source}`);
@@ -95,7 +107,8 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   }
   forbid(casc, /scope: GLOBAL|PLANE_GITHUB_|PLANE_GHCR_/, 'public-source controller must not define GitHub or registry credentials');
   forbid(casc, /nonVerifyingKeyVerificationStrategy|manuallyTrustedKeyVerificationStrategy/, 'host-key bypass is forbidden');
-  requireMatch(job, /disabled\(true\)/, 'job must default disabled');
+  requireMatch(job, /PLANE_CD_TRIGGER_MODE/, 'job must read the fixed persisted selector');
+  requireMatch(job, /disabled\(triggerMode == 'disabled'\)/, 'job enablement must follow the persisted selector');
   requireMatch(job, /userPermission\('hudson[.]model[.]Item[.]Read', 'plane-webhook-gateway'\)/,
     'gateway folder/job grants must identify a user');
   requireMatch(job, /userPermission\('hudson[.]model[.]Item[.]Build', 'plane-webhook-gateway'\)/,
@@ -122,7 +135,7 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(init, /bootstrap file must be removed after its one-time application/, 'one-time bootstrap replay rejection missing');
   requireMatch(init, /plane-actions-poller/, 'dedicated poller principal readiness check missing');
   requireMatch(init, /poller global authorization is not least privilege/, 'poller global denial proof missing');
-  requireMatch(init, /poller job authorization or disabled state is invalid/, 'poller job denial proof missing');
+  requireMatch(init, /poller job authorization or selector state is invalid/, 'poller job denial proof missing');
 
   requireMatch(init, /CredentialsProvider[.]VIEW/, 'gateway credential-view denial proof missing');
   requireMatch(init, /Jenkins[.]RUN_SCRIPTS/, 'gateway Script Console denial proof missing');
