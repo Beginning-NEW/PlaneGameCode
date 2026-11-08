@@ -55,9 +55,28 @@ export class FileSecretProvider {
   }
 
   get() {
-    const secret = readFileSync(this.path);
-    if (secret.length === 0) throw Object.assign(new Error('empty secret'), { code: 'secret_unavailable' });
-    return secret;
+    try {
+      const uid = process.getuid();
+      const parent = lstatSync(dirname(this.path));
+      if (!parent.isDirectory() || parent.uid !== uid || (parent.mode & 0o777) !== 0o700) {
+        throw new Error('invalid secret directory');
+      }
+      const fd = openSync(this.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const file = fstatSync(fd);
+        if (!file.isFile() || file.nlink !== 1 || file.uid !== uid ||
+            (file.mode & 0o777) !== 0o600 || file.size === 0 || file.size > 4096) {
+          throw new Error('invalid secret file');
+        }
+        const secret = readFileSync(fd);
+        if (secret.length !== file.size) throw new Error('secret changed during read');
+        return secret;
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      throw Object.assign(new Error('secret unavailable'), { code: 'secret_unavailable' });
+    }
   }
 }
 
