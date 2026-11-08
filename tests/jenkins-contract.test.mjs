@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const [pipeline, verify, resolveDigest, pullHelper, publicImages, gate, preflight, sudoPolicy, localDeploy,
-  promote, common, docs, checks, jobDsl] = await Promise.all([
+  prePromote, promote, common, docs, checks, jobDsl] = await Promise.all([
   readFile(new URL('../Jenkinsfile', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/verify-candidate.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/resolve-public-ghcr-digest.sh', import.meta.url), 'utf8'),
@@ -13,6 +13,7 @@ const [pipeline, verify, resolveDigest, pullHelper, publicImages, gate, prefligh
   readFile(new URL('../deploy/plane-preflight', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/preflight_sudo_policy.py', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/deploy-local.sh', import.meta.url), 'utf8'),
+  readFile(new URL('../ops/jenkins/pre-promote-check.sh', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/promote.sh', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/common.sh', import.meta.url), 'utf8'),
   readFile(new URL('../RUNBOOK.md', import.meta.url), 'utf8'),
@@ -71,6 +72,11 @@ test('webhook metadata is verified through the anonymous exact-attempt and main-
   assert.match(verify, /Protected main moved; stale candidate rejected/);
   assert.match(verify, /resolve-public-ghcr-digest[.]sh/);
   assert.doesNotMatch(verify, /Authorization:|artifacts\/|GH_API_TOKEN/);
+  for (const script of [localDeploy, prePromote]) {
+    assert.match(script, /env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy/);
+    assert.match(script, /git -c http[.]proxy= -c http[.]followRedirects=false -c http[.]sslVerify=true/);
+    assert.match(script, /fetch --no-tags https:\/\/github[.]com\/Beginning-NEW\/PlaneGameCode[.]git refs\/heads\/main/);
+  }
 });
 
 test('public registries use no login, a blank Docker config, re-resolution, and digest-only pulls', () => {

@@ -24,7 +24,9 @@ expected=$(printf '%s\t%s\t%s\t%s' "$digest" "$gateway_image" "$run_number" "$ru
   echo 'Trusted Actions handoff changed after image pull' >&2
   exit 1
 }
-GIT_TERMINAL_PROMPT=0 git fetch --no-tags origin refs/heads/main
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
+  GIT_TERMINAL_PROMPT=0 git -c http.proxy= -c http.followRedirects=false -c http.sslVerify=true \
+  fetch --no-tags https://github.com/Beginning-NEW/PlaneGameCode.git refs/heads/main
 [[ "$(git rev-parse FETCH_HEAD)" == "$sha" ]] || {
   echo 'SCM main moved after image pull; stale candidate rejected' >&2
   exit 1

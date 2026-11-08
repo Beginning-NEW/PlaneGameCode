@@ -79,6 +79,10 @@ while (($#)); do
 done
 
 [[ -n "$body" && -n "$headers" && -n "$url" ]]
+if [[ "$url" == https://api.github.com/* ]]; then
+  printf '%s\t%s\t%s\t%s\t%s\n' "$url" "$proxy_marker" "$noproxy" "$proto" "$max_redirs" \
+    >> "$MOCK_PUBLIC_FIXTURE/github-direct-calls.log"
+fi
 : > "$headers"
 status=200
 case "$url" in
@@ -247,6 +251,21 @@ test('production shell accepts one exact anonymous run, main ref, and registry d
     const result = run('ops/jenkins/verify-candidate.sh', [sha, '9001', '2'], fixture);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), `${digest}\t${gatewayImage}\t77\t2`);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('production candidate revalidation bypasses hostile proxies and redirects for every GitHub call', { skip: !canRunShellDrills }, async () => {
+  const fixture = await createFixture();
+  try {
+    const result = run('ops/jenkins/verify-candidate.sh', [sha, '9001', '2'], fixture);
+    assert.equal(result.status, 0, result.stderr);
+    const calls = (await readFile(join(fixture.root, 'github-direct-calls.log'), 'utf8')).trim().split('\n');
+    assert.deepEqual(calls, [
+      `https://api.github.com/repos/Beginning-NEW/PlaneGameCode/actions/runs/9001/attempts/2\t\tapi.github.com\t=https\t0`,
+      `https://api.github.com/repos/Beginning-NEW/PlaneGameCode/git/ref/heads/main\t\tapi.github.com\t=https\t0`,
+    ]);
   } finally {
     await fixture.cleanup();
   }

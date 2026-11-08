@@ -85,7 +85,9 @@ bash ops/jenkins/resource-gate.sh
 if [[ "$mode" == poller ]]; then
   second_digest=$(bash ops/jenkins/resolve-public-ghcr-digest.sh "$GITHUB_REPOSITORY" "$sha")
   [[ "$second_digest" == "$digest" ]] || { echo 'GHCR digest changed before deployment' >&2; exit 1; }
-  GIT_TERMINAL_PROMPT=0 git fetch --no-tags origin refs/heads/main
+  env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
+    GIT_TERMINAL_PROMPT=0 git -c http.proxy= -c http.followRedirects=false -c http.sslVerify=true \
+    fetch --no-tags https://github.com/Beginning-NEW/PlaneGameCode.git refs/heads/main
   [[ "$(git rev-parse FETCH_HEAD)" == "$sha" ]] || { echo 'SCM main moved after image pull' >&2; exit 1; }
 else
   bash ops/jenkins/pre-promote-check.sh "$sha" "$run_id" "$run_attempt" "$digest" "$gateway_image" "$run_number"

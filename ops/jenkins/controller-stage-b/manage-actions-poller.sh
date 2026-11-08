@@ -160,9 +160,18 @@ require_persistent_disabled_poller() {
 }
 
 ensure_unit_directory() {
-  local parent mode
-  for parent in "${XDG_CONFIG_HOME:-"$HOME/.config"}" \
-      "${XDG_CONFIG_HOME:-"$HOME/.config"}/systemd" "$unit_dir" "$dropin_dir"; do
+  local create_dropin=${1:-false} parent mode
+  local -a parents=(
+    "${XDG_CONFIG_HOME:-"$HOME/.config"}"
+    "${XDG_CONFIG_HOME:-"$HOME/.config"}/systemd"
+    "$unit_dir"
+  )
+  case "$create_dropin" in
+    true) parents+=("$dropin_dir") ;;
+    false) ;;
+    *) fail 'internal unit-directory mode is invalid' ;;
+  esac
+  for parent in "${parents[@]}"; do
     [[ ! -L "$parent" ]] || fail "systemd configuration path must not be a symlink: $parent"
     mkdir -p -- "$parent"
     [[ -d "$parent" && ! -L "$parent" ]] || fail "systemd configuration path is not a real directory: $parent"
@@ -186,11 +195,14 @@ atomic_install() {
 }
 
 atomic_remove() {
-  local destination=$1
+  local destination=$1 parent
   [[ ! -d "$destination" ]] || fail "refusing to remove a directory where a unit file is expected: $destination"
   if [[ -e "$destination" || -L "$destination" ]]; then
+    parent=$(dirname -- "$destination")
+    [[ -d "$parent" && ! -L "$parent" ]] ||
+      fail "unit-file parent must be a real directory before removal: $parent"
     rm -f -- "$destination"
-    sync -f "$(dirname -- "$destination")"
+    sync -f "$parent"
   fi
 }
 
@@ -281,7 +293,7 @@ case "$action" in
     require_activation_state
     require_linger
     require_webhook_inactive
-    ensure_unit_directory
+    ensure_unit_directory true
     atomic_install "$service_source" "$unit_dir/$service_name"
     atomic_install "$timer_source" "$unit_dir/$timer_name"
     atomic_install "$dropin_source" "$dropin_dir/10-trigger-mode.conf"
@@ -293,7 +305,7 @@ case "$action" in
     ;;
   deactivate)
     ensure_state_directory
-    ensure_unit_directory
+    ensure_unit_directory false
     atomic_install "$service_source" "$unit_dir/$service_name"
     atomic_install "$timer_source" "$unit_dir/$timer_name"
     systemctl --user stop "$timer_name" "$service_name" >/dev/null 2>&1 || true

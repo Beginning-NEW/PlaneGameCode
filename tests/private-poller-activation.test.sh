@@ -248,6 +248,13 @@ grep -Fxq "after_boot_id=$boot_three" "$state_dir/deactivation-restart-proof"
 grep -Fxq 'timer_enabled=disabled' "$state_dir/deactivation-restart-proof"
 grep -Fxq 'service_active=inactive' "$state_dir/deactivation-restart-proof"
 
+# A never-activated host has no trigger-mode drop-in directory. Deactivation
+# must not create that directory merely to remove an absent selector, and must
+# not call sync against a parent that does not exist.
+rm -rf "$home/.config/systemd/user/plane-game-actions-poller.service.d"
+run_manager deactivate >/dev/null
+test ! -e "$home/.config/systemd/user/plane-game-actions-poller.service.d"
+
 # A partial activation may leave only a mode drop-in, dangling timer enablement,
 # and active-state evidence. Deactivation restores the reviewed disabled units
 # without depending on the activation ledger or credential files.
