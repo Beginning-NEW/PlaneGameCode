@@ -25,6 +25,8 @@ Startup verifies modes, ownership, regular-file/link count, the complete hash ch
 
 The poller states are `observed -> eligible -> post_intent -> queued -> building -> deploy_claimed -> succeeded|failed|quarantined`. `post_intent` is fsynced before the sole Jenkins POST. Only HTTP 201 with Jenkins identity headers and an exact loopback `/queue/item/{id}/` Location advances. Ambiguous POST outcomes are quarantined and require authenticated exact-`TRIGGER_ID` operator reconciliation; they are never posted again automatically.
 
+Jenkins revalidation durably binds the queued tuple to the current fixed job's `BUILD_NUMBER` and derived build URL before its five-call validation. A reconciled `building` tuple may resume only inside that exact live build when both persisted identity fields match; a different, malformed, duplicate, sequential, or already-deploying build rejects before validation without poisoning an existing live tuple.
+
 The deployment states are `deploy_observed -> deploy_intent -> runtime_present -> health_verified -> deploy_succeeded`, with `rollback_intent -> rollback_verified -> failed` and `quarantined` branches. `deploy_intent` is durable before pull or runtime mutation and includes the candidate plus previous-good tuple, digest, and deterministic runtime identity. A restart:
 
 - records success without redeployment for exactly one healthy candidate runtime with exact labels and digest;
