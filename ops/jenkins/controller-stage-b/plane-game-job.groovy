@@ -1,7 +1,7 @@
 // Imported by JCasC. The job remains disabled until the separate enablement gate.
 folder('plane-game') {
   authorization {
-    permission('hudson.model.Item.Read', 'plane-webhook-gateway')
+    userPermission('hudson.model.Item.Read', 'plane-webhook-gateway')
   }
 }
 
@@ -15,8 +15,8 @@ pipelineJob('plane-game/main-cd') {
     stringParam('WEBHOOK_DELIVERY', '', 'Validated X-GitHub-Delivery UUID')
   }
   authorization {
-    permission('hudson.model.Item.Read', 'plane-webhook-gateway')
-    permission('hudson.model.Item.Build', 'plane-webhook-gateway')
+    userPermission('hudson.model.Item.Read', 'plane-webhook-gateway')
+    userPermission('hudson.model.Item.Build', 'plane-webhook-gateway')
   }
   definition {
     cpsScm {

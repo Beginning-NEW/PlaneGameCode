@@ -9,7 +9,7 @@ jenkins:
     local:
       allowsSignup: false
   authorizationStrategy:
-    globalMatrix:
+    projectMatrix:
       entries:
         - user:
             name: "plane-admin"
@@ -36,7 +36,7 @@ jenkins:
             port: 22
             credentialsId: "plane-game-agent-ssh"
             javaPath: "/usr/bin/java"
-            hostKeyVerificationStrategy:
+            sshHostKeyVerificationStrategy:
               manuallyProvidedKeyVerificationStrategy:
                 key: "${trim:${readFile:/run/secrets/PLANE_AGENT_ED25519_HOST_KEY}}"
         retentionStrategy: "always"

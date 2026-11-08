@@ -29,12 +29,13 @@ image_id=$(tr -d '\r\n' < "$image_id_file")
 [[ "$(docker image inspect --format '{{ index .Config.Labels "io.paperclip.plane-game.profile" }}' "$image_id")" == jenkins-controller-stage-b ]] ||
   fail 'image ID is not the approved Stage B controller image'
 
+# Rootless container UID 0 maps to host UID 1003, which owns the 0700 output directory.
 docker run --rm --interactive --tty \
   --network none \
   --read-only \
   --security-opt no-new-privileges:true \
   --cap-drop ALL \
-  --user "$(id -u):$(id -g)" \
+  --user 0:0 \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
   --mount "type=bind,src=$profile_dir/GenerateAdminBootstrap.java,dst=/tool/GenerateAdminBootstrap.java,readonly" \
   --mount "type=bind,src=$approved_dir,dst=/output" \
@@ -42,7 +43,7 @@ docker run --rm --interactive --tty \
   "$image_id" -eu -c '
     cd /tmp
     jar tf /usr/share/jenkins/jenkins.war |
-      grep -E "^WEB-INF/lib/(jbcrypt|spring-security-crypto)-[^/]+[.]jar$" > bcrypt-jars
+      grep -E "^WEB-INF/lib/(jbcrypt|spring-security-crypto|jcl-over-slf4j|slf4j-api|slf4j-jdk14)-[^/]+[.]jar$" > bcrypt-jars
     test -s bcrypt-jars
     while IFS= read -r dependency; do jar xf /usr/share/jenkins/jenkins.war "$dependency"; done < bcrypt-jars
     classpath=$(find WEB-INF/lib -type f -name "*.jar" -print | paste -sd: -)

@@ -13,11 +13,12 @@ test('bootstrap generator needs no host htpasswd or network and uses the exact a
   assert.doesNotMatch(helper, /htpasswd/);
   assert.match(helper, /image_id=.*image_id_file/);
   assert.match(helper, /jenkins-controller-stage-b/);
+  assert.match(helper, /jcl-over-slf4j\|slf4j-api\|slf4j-jdk14/);
   assert.match(helper, /--network none/);
   assert.match(helper, /--read-only/);
   assert.match(helper, /--cap-drop ALL/);
   assert.match(helper, /--security-opt no-new-privileges:true/);
-  assert.match(helper, /--user "\$\(id -u\):\$\(id -g\)"/);
+  assert.match(helper, /--user 0:0/);
   assert.match(docs, /does not require host `htpasswd`, Python, a package install, or network access/);
 });
 

@@ -107,8 +107,8 @@ def agentValid = agent != null &&
   agent.getLabelString().split(/\s+/).contains('plane-game-cd-rootless') &&
   launcher instanceof SSHLauncher &&
   launcher.getCredentialsId() == 'plane-game-agent-ssh' &&
-  launcher.getHostKeyVerificationStrategy() instanceof ManuallyProvidedKeyVerificationStrategy &&
-  launcher.getHostKeyVerificationStrategy().getKey()?.startsWith('ssh-ed25519 ')
+  launcher.getSshHostKeyVerificationStrategy() instanceof ManuallyProvidedKeyVerificationStrategy &&
+  launcher.getSshHostKeyVerificationStrategy().getKey()?.startsWith('ssh-ed25519 ')
 if (!agentValid) {
   fail('bounded exclusive SSH agent is invalid')
 }
@@ -116,6 +116,13 @@ if (!agentValid) {
 def adminAuth = admin.impersonate2()
 def gatewayAuth = gateway.impersonate2()
 def job = controller.getItemByFullName('plane-game/main-cd')
+// On a fresh home, JCasC Job DSL can persist new items after Jenkins has
+// loaded its in-memory item catalog. Reload once, then validate the live items.
+if (job == null || controller.getItem('plane-game') == null) {
+  controller.reload()
+  println('Stage B reloaded the JCasC-created job catalog')
+  job = controller.getItemByFullName('plane-game/main-cd')
+}
 if (!controller.getACL().hasPermission2(adminAuth, Jenkins.ADMINISTER)) {
   fail('fixed local admin lacks Overall/Administer')
 }

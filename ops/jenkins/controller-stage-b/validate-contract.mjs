@@ -38,6 +38,8 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
     if (!dockerfile.includes(option)) throw new Error(`Dockerfile missing ${option}`);
   }
   requireMatch(casc, /numExecutors: 0/, 'controller must have zero executors');
+  requireMatch(casc, /authorizationStrategy:\s*projectMatrix:/, 'project-level job grants require projectMatrix');
+  forbid(casc, /authorizationStrategy:\s*globalMatrix:/, 'globalMatrix does not apply job grants');
   requireMatch(casc, /slaveAgentPort: -1/, 'inbound agent port must be disabled');
   requireMatch(casc, /crumbIssuer:\s*standard: \{\}/, 'default CSRF crumb issuer is missing');
   forbid(casc, /excludeClientIPFromCrumb/, 'removed Jenkins crumb IP option is unsupported');
@@ -50,6 +52,9 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(casc, /scope: SYSTEM/, 'agent credential must be SYSTEM scoped');
   requireMatch(casc, /privateKeySource:\s*directEntry:/, 'JCasC SSH private-key source must use directEntry');
   requireMatch(casc, /manuallyProvidedKeyVerificationStrategy:/, 'fixed host-key verifier missing');
+  requireMatch(casc, /sshHostKeyVerificationStrategy:/, 'SSH launcher host-key field is missing');
+  forbid(casc, /\s+hostKeyVerificationStrategy:/, 'obsolete SSH launcher host-key field is unsupported');
+  requireMatch(init, /getSshHostKeyVerificationStrategy\(\)/, 'SSH launcher readiness check uses an obsolete getter');
   requireMatch(casc, /PLANE_AGENT_ED25519_HOST_KEY/, 'Ed25519 host-key file reference missing');
   for (const source of [
     'PLANE_AGENT_HOST',
@@ -63,6 +68,10 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   forbid(casc, /scope: GLOBAL|PLANE_GITHUB_|PLANE_GHCR_/, 'public-source controller must not define GitHub or registry credentials');
   forbid(casc, /nonVerifyingKeyVerificationStrategy|manuallyTrustedKeyVerificationStrategy/, 'host-key bypass is forbidden');
   requireMatch(job, /disabled\(true\)/, 'job must default disabled');
+  requireMatch(job, /userPermission\('hudson[.]model[.]Item[.]Read', 'plane-webhook-gateway'\)/,
+    'gateway folder/job grants must identify a user');
+  requireMatch(job, /userPermission\('hudson[.]model[.]Item[.]Build', 'plane-webhook-gateway'\)/,
+    'gateway job build grant must identify a user');
   requireMatch(job, /folder\('plane-game'\)[\s\S]*Item[.]Read[\s\S]*plane-webhook-gateway/, 'gateway folder read grant missing');
   requireMatch(job, /Item[.]Read'[\s\S]*plane-webhook-gateway[\s\S]*Item[.]Build'[\s\S]*plane-webhook-gateway/, 'gateway job read/build grants missing');
   requireMatch(job, /url\('https:\/\/github[.]com\/Beginning-NEW\/PlaneGameCode[.]git'\)/, 'anonymous SCM allowlist is missing');
@@ -76,6 +85,8 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(init, /CredentialsProvider[.]VIEW/, 'gateway credential-view denial proof missing');
   requireMatch(init, /Jenkins[.]RUN_SCRIPTS/, 'gateway Script Console denial proof missing');
   requireMatch(init, /stage-b-ready-v2/, 'authorization readiness marker missing');
+  requireMatch(init, /controller[.]reload\(\)[\s\S]*job = controller[.]getItemByFullName\('plane-game\/main-cd'\)/,
+    'fresh-home Job DSL catalog must reload before live authorization checks');
   requireMatch(health, /stage-b-ready-v2/, 'healthcheck does not require authorization readiness');
 
   forbid(scripts, /github-(?:scm|actions)|ghcr-(?:username|token)|PLANE_(?:GITHUB|GHCR)_/,
