@@ -367,6 +367,8 @@ write_disabled_verified_proof() {
 
 activation_pending=false
 rollback_partial_activation() {
+  activation_pending=false
+  trap - ERR
   set +e
   systemctl --user stop "$timer_name" "$service_name" >/dev/null 2>&1
   systemctl --user disable "$timer_name" "$service_name" >/dev/null 2>&1

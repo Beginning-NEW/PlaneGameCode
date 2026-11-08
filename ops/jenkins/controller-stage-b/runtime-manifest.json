@@ -81,7 +81,6 @@
       "cpuQuota": "25%",
       "tasksMax": 32,
       "timeoutStartSec": "240s",
-      "runtimeMaxSec": "240s",
       "logRateLimitIntervalSec": "60s",
       "logRateLimitBurst": 50
     },

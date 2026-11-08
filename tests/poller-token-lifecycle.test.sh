@@ -51,7 +51,7 @@ chmod 0700 "$fake_bin/curl"
 
 run_helper() {
   env HOME="$scratch/home" XDG_RUNTIME_DIR="$runtime" FAKE_TOKEN_STATE="$fake_state" \
-    PATH="$fake_bin:/usr/bin:/bin" bash "$profile/create-poller-token.sh" "$1" "$token_file"
+    PATH="$fake_bin:$PATH" bash "$profile/create-poller-token.sh" "$1" "$token_file"
 }
 
 run_helper create >/dev/null

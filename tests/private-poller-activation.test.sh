@@ -211,7 +211,7 @@ printf '%s\n' "$boot_one" >"$fake_state/boot-id"
 
 run_manager() {
   env HOME="$home" XDG_CONFIG_HOME="$home/.config" \
-    FAKE_SYSTEMD_STATE="$fake_state" PATH="$fake_bin:/usr/bin:/bin" \
+    FAKE_SYSTEMD_STATE="$fake_state" PATH="$fake_bin:$PATH" \
     bash "$profile/manage-actions-poller.sh" "$@"
 }
 
@@ -338,5 +338,24 @@ boot_four=44444444-4444-4444-8444-444444444444
 printf '%s\n' "$boot_four" >"$fake_state/boot-id"
 run_manager verify-disabled-restart >/dev/null
 grep -Fxq "after_boot_id=$boot_four" "$state_dir/deactivation-restart-proof"
+
+# A missing Node executable must fail activation promptly and leave the tuple disabled.
+cat >"$fake_bin/node" <<'SH'
+#!/usr/bin/env bash
+exit 127
+SH
+chmod 0700 "$fake_bin/node"
+set +e
+timeout 5s env HOME="$home" XDG_CONFIG_HOME="$home/.config" \
+  FAKE_SYSTEMD_STATE="$fake_state" PATH="$fake_bin:$PATH" \
+  bash "$profile/manage-actions-poller.sh" activate >"$scratch/missing-node.log" 2>&1
+missing_node_status=$?
+set -e
+[[ "$missing_node_status" -ne 0 && "$missing_node_status" -ne 124 ]] || {
+  printf 'missing Node did not fail activation promptly\n' >&2
+  exit 1
+}
+grep -Fxq disabled "$approved_dir/cd-trigger-mode"
+test ! -e "$home/.config/systemd/user/timers.target.wants/plane-game-actions-poller.timer"
 
 printf 'private poller persistent activation and deactivation test: PASS\n'

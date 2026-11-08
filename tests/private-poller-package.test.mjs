@@ -35,7 +35,7 @@ test('poller package is disabled, five-minute bounded, and mutually exclusive wi
   assert.equal(manifest.poller.candidateGraphRequests, 16);
   assert.deepEqual(manifest.poller.limits, {
     memoryMax: '192M', cpuQuota: '25%', tasksMax: 32,
-    timeoutStartSec: '240s', runtimeMaxSec: '240s',
+    timeoutStartSec: '240s',
     logRateLimitIntervalSec: '60s', logRateLimitBurst: 50,
   });
   assert.deepEqual(manifest.poller.ledgerRetention, {

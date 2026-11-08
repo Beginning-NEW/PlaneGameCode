@@ -31,7 +31,6 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   }
   if (manifest.poller?.limits?.memoryMax !== '192M' || manifest.poller?.limits?.cpuQuota !== '25%' ||
       manifest.poller?.limits?.tasksMax !== 32 || manifest.poller?.limits?.timeoutStartSec !== '240s' ||
-      manifest.poller?.limits?.runtimeMaxSec !== '240s' ||
       manifest.poller?.limits?.logRateLimitIntervalSec !== '60s' ||
       manifest.poller?.limits?.logRateLimitBurst !== 50 ||
       manifest.poller?.ledgerRetention?.compactAtBytes !== 4194304 ||
