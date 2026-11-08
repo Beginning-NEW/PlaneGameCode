@@ -36,7 +36,7 @@ request() {
 scope='repository:beginning-new/planegamecode:pull'
 request "$work/token.json" "$work/token.headers" \
   "https://ghcr.io/token?scope=$scope"
-token=$(jq -er '.token | select(type == "string" and test("^[A-Za-z0-9._~-]+$"))' "$work/token.json") ||
+token=$(jq -er '.token | select(type == "string" and length >= 16 and length <= 8192 and test("^[A-Za-z0-9._~+/-]+={0,2}$"))' "$work/token.json") ||
   fail 'registry token response is malformed'
 
 printf 'header = "Authorization: Bearer %s"\n' "$token" > "$work/auth.config"

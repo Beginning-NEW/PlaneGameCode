@@ -118,7 +118,7 @@ function expectedRun(overrides = {}) {
   };
 }
 
-async function createFixture({ run = expectedRun(), mainSha = sha, manifest = { schemaVersion: 2 }, mode = '' } = {}) {
+async function createFixture({ run = expectedRun(), mainSha = sha, manifest = { schemaVersion: 2 }, token = 'fixture-public-token=', mode = '' } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'plane-public-source-'));
   const bin = join(root, 'bin');
   const dockerConfig = join(root, 'docker-config');
@@ -126,7 +126,7 @@ async function createFixture({ run = expectedRun(), mainSha = sha, manifest = { 
   await mkdir(dockerConfig);
   await writeFile(join(root, 'run.json'), JSON.stringify(run));
   await writeFile(join(root, 'main.json'), JSON.stringify({ object: { sha: mainSha } }));
-  await writeFile(join(root, 'token.json'), JSON.stringify({ token: 'fixture-token' }));
+  await writeFile(join(root, 'token.json'), JSON.stringify({ token }));
   await writeFile(join(root, 'manifest.json'), JSON.stringify(manifest));
   await writeFile(join(dockerConfig, 'config.json'), '{}\n');
   await writeFile(join(bin, 'curl'), mockCurl, { mode: 0o755 });
@@ -212,6 +212,8 @@ test('production shell fails closed on public API and registry transport, HTTP, 
     { mode: 'registry-rate', error: /rate limit is exhausted/i },
     { mode: 'digest-malformed', error: /canonical sha256 digest/i },
     { mode: 'digest-multiple', error: /canonical sha256 digest/i },
+    { token: 'fixture-token\nAuthorization: malicious', error: /token response is malformed/i },
+    { token: 'fixture-token=malformed', error: /token response is malformed/i },
     { manifest: { schemaVersion: 1 }, error: /manifest is malformed/i },
   ];
   for (const scenario of cases) {
