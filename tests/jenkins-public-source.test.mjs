@@ -83,12 +83,14 @@ done
 status=200
 case "$url" in
   https://api.github.com/*/actions/runs/*)
+    [[ "$proxy_marker" == '' && "$noproxy" == api.github.com && "$proto" == '=https' && "$max_redirs" == 0 ]]
     [[ "$MOCK_PUBLIC_MODE" != github-timeout ]] || exit 28
     [[ "$MOCK_PUBLIC_MODE" != github-504 ]] || status=504
     [[ "$MOCK_PUBLIC_MODE" != github-rate ]] || printf 'X-RateLimit-Remaining: 0\r\n' >> "$headers"
     cp "$MOCK_PUBLIC_FIXTURE/run.json" "$body"
     ;;
   https://api.github.com/*/git/ref/heads/main)
+    [[ "$proxy_marker" == '' && "$noproxy" == api.github.com && "$proto" == '=https' && "$max_redirs" == 0 ]]
     cp "$MOCK_PUBLIC_FIXTURE/main.json" "$body"
     ;;
   https://ghcr.io/token*)

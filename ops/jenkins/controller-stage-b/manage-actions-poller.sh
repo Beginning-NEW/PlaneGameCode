@@ -188,8 +188,10 @@ atomic_install() {
 atomic_remove() {
   local destination=$1
   [[ ! -d "$destination" ]] || fail "refusing to remove a directory where a unit file is expected: $destination"
-  rm -f -- "$destination"
-  sync -f "$(dirname -- "$destination")"
+  if [[ -e "$destination" || -L "$destination" ]]; then
+    rm -f -- "$destination"
+    sync -f "$(dirname -- "$destination")"
+  fi
 }
 
 read_boot_id() {

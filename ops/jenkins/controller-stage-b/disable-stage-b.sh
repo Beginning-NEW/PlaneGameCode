@@ -18,7 +18,11 @@ grep -Fxq 'plane-game/main-cd=disabled' "$approved_dir/job-disabled.ack" ||
 
 printf 'disable-order=job,poller,gateway,controller\n'
 "$profile_dir/manage-actions-poller.sh" deactivate
-systemctl --user stop plane-game-webhook-gateway.service
+if ! systemctl --user stop plane-game-webhook-gateway.service; then
+  load_state=$(systemctl --user show plane-game-webhook-gateway.service --property=LoadState --value) ||
+    fail 'cannot inspect gateway unit after stop failed'
+  [[ "$load_state" == not-found ]] || fail 'cannot stop installed gateway unit'
+fi
 if docker container inspect "$JENKINS_CONTAINER" >/dev/null 2>&1; then
   docker stop --time 30 "$JENKINS_CONTAINER" >/dev/null
 fi

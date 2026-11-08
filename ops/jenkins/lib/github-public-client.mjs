@@ -1,3 +1,5 @@
+import { directPublicGitHubFetch } from './direct-public-github-http.mjs';
+
 const API_ORIGIN = 'https://api.github.com';
 const REPOSITORY = 'Beginning-NEW/PlaneGameCode';
 const REPOSITORY_PATH = '/repos/Beginning-NEW/PlaneGameCode';
@@ -82,7 +84,7 @@ function decodeJson(buffer) {
 }
 
 export class PublicGitHubClient {
-  constructor({ ledger, reservationId = null, fetchImpl = fetch, now = () => Date.now() }) {
+  constructor({ ledger, reservationId = null, fetchImpl = directPublicGitHubFetch, now = () => Date.now() }) {
     this.ledger = ledger;
     this.reservationId = reservationId;
     this.fetchImpl = fetchImpl;

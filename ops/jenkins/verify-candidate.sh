@@ -20,6 +20,7 @@ trap 'rm -rf -- "$work"' EXIT
 public_get() {
   local url=$1 body=$2 headers=$3 status
   status=$(curl --silent --show-error --retry 0 --connect-timeout 10 --max-time 30 \
+    --proxy '' --noproxy api.github.com --proto '=https' --max-redirs 0 \
     --dump-header "$headers" --output "$body" --write-out '%{http_code}' \
     -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$url") || {
     echo 'Public GitHub API unavailable or timed out' >&2
