@@ -11,7 +11,6 @@ const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const sha = 'a'.repeat(40);
 const digest = `sha256:${'b'.repeat(64)}`;
 const changedDigest = `sha256:${'c'.repeat(64)}`;
-const gatewayImage = `nginxinc/nginx-unprivileged@sha256:${'d'.repeat(64)}`;
 
 const [pipeline, casc, job, images, pullHelper] = await Promise.all([
   readFile(new URL('../Jenkinsfile', import.meta.url), 'utf8'),
@@ -20,6 +19,7 @@ const [pipeline, casc, job, images, pullHelper] = await Promise.all([
   readFile(new URL('../ops/jenkins/public-source-images.env', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/pull-public-images.sh', import.meta.url), 'utf8'),
 ]);
+const gatewayImage = images.match(/^GATEWAY_IMAGE=(.+)$/m)?.[1] ?? '';
 
 const mockCurl = String.raw`#!/usr/bin/env bash
 set -euo pipefail
