@@ -81,7 +81,7 @@ async function main() {
       evidence.hash,
       evidence.approvals[0].reviewer.login,
       String(evidence.approvals[0].reviewer.id),
-      evidence.approvals[0].submittedAt,
+      evidence.approvals[0].marker,
       evidence.deployment.id,
     ].join('\t') + '\n');
   } catch (error) {

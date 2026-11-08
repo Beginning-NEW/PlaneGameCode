@@ -58,7 +58,16 @@ function validateRun(run, candidate) {
   return { startedMs, completedMs, runNumber: String(run.run_number) };
 }
 
-function validateApprovals(approvals, window) {
+function approvalMarker(candidate) {
+  return `plane-game-cd-approved run=${candidate.runId} attempt=${candidate.runAttempt} sha=${candidate.sha}`;
+}
+
+function withinAttempt(value, window) {
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) && ms >= window.startedMs && ms <= window.completedMs ? ms : null;
+}
+
+function validateApprovals(approvals, candidate) {
   if (!Array.isArray(approvals) || approvals.length === 0 || approvals.length >= 100) {
     throw candidateError('approval_history_rejected');
   }
@@ -71,37 +80,39 @@ function validateApprovals(approvals, window) {
   const allowed = production.filter((record) =>
     record?.user?.login === APPROVER.login && record?.user?.id === APPROVER.id);
   if (allowed.length === 0) throw candidateError('approval_reviewer_rejected');
-  const normalized = allowed.map((record) => {
-    const submittedMs = Date.parse(record.submitted_at);
-    if (!Number.isFinite(submittedMs) || submittedMs < window.startedMs || submittedMs > window.completedMs) {
-      throw candidateError('approval_attempt_ambiguous');
-    }
-    return {
-      reviewer: APPROVER,
-      environment: 'production',
-      submittedAt: new Date(submittedMs).toISOString(),
-    };
-  });
-  return normalized.sort((a, b) => a.submittedAt.localeCompare(b.submittedAt));
+  const marker = approvalMarker(candidate);
+  if (allowed.filter((record) => record?.comment === marker).length !== 1) {
+    throw candidateError('approval_attempt_ambiguous');
+  }
+  return [{ reviewer: APPROVER, environment: 'production', marker }];
 }
 
-function selectDeployment(deployments, candidate) {
+function selectDeployment(deployments, candidate, window) {
   if (!Array.isArray(deployments) || deployments.length === 0 || deployments.length >= 100) {
     throw candidateError('deployment_history_rejected');
   }
   const matches = deployments.filter((deployment) =>
     deployment?.sha === candidate.sha && deployment?.environment === 'production' &&
-    positive(deployment?.id));
+    positive(deployment?.id) && withinAttempt(deployment?.created_at, window) !== null);
   if (matches.length !== 1) throw candidateError('deployment_ambiguous');
   return matches[0];
 }
 
-function validateDeploymentStatus(statuses, deployment) {
+function validateDeploymentStatus(statuses, deployment, window) {
   if (!Array.isArray(statuses) || statuses.length === 0 || statuses.length >= 100) {
     throw candidateError('deployment_status_rejected');
   }
   const latest = statuses[0];
-  if (latest?.state !== 'success' || String(latest?.deployment_url ?? '').split('/').at(-1) !== String(deployment.id)) {
+  const url = `https://api.github.com/repos/${githubPolicy.REPOSITORY}/deployments/${deployment.id}`;
+  if (latest?.state !== 'success' || statuses.some((status) =>
+    status?.deployment_url !== url || withinAttempt(status?.created_at, window) === null)) {
+    throw candidateError('deployment_status_rejected');
+  }
+  const chronological = [...statuses].reverse();
+  const states = chronological.map((status) => status.state);
+  const times = chronological.map((status) => withinAttempt(status.created_at, window));
+  if (!['waiting,in_progress,success', 'waiting,queued,in_progress,success'].includes(states.join(',')) ||
+      times.some((time, index) => index > 0 && time < times[index - 1])) {
     throw candidateError('deployment_status_rejected');
   }
   return { id: String(latest.id ?? ''), state: latest.state, createdAt: latest.created_at ?? null };
@@ -132,13 +143,13 @@ export async function validateCandidate(client, rawCandidate) {
   const window = validateRun(runResponse.data, candidate);
   const approvalsResponse = await client.get(
     `${base}/actions/runs/${candidate.runId}/approvals?per_page=100`, { list: true });
-  const approvals = validateApprovals(approvalsResponse.data, window);
+  const approvals = validateApprovals(approvalsResponse.data, candidate);
   const deploymentsResponse = await client.get(
     `${base}/deployments?sha=${candidate.sha}&environment=production&per_page=100`, { list: true });
-  const deployment = selectDeployment(deploymentsResponse.data, candidate);
+  const deployment = selectDeployment(deploymentsResponse.data, candidate, window);
   const statusesResponse = await client.get(
     `${base}/deployments/${deployment.id}/statuses?per_page=100`, { list: true });
-  const status = validateDeploymentStatus(statusesResponse.data, deployment);
+  const status = validateDeploymentStatus(statusesResponse.data, deployment, window);
   const mainResponse = await client.get(`${base}/git/ref/heads/main`);
   validateMain(mainResponse.data, candidate);
 
@@ -168,6 +179,7 @@ export const candidatePolicy = {
   EXPECTED_WORKFLOW_ID,
   EXPECTED_WORKFLOW_PATH,
   APPROVER,
+  approvalMarker,
   exactCandidate,
   evidenceHash,
 };

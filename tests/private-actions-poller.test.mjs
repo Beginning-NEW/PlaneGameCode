@@ -67,7 +67,7 @@ function run(overrides = {}) {
 function approval(overrides = {}) {
   return {
     state: 'approved',
-    submitted_at: '2026-11-08T23:55:00Z',
+    comment: `plane-game-cd-approved run=${RUN_ID} attempt=${ATTEMPT} sha=${SHA}`,
     user: { login: 'Beginning-NEW', id: 183624934 },
     environments: [{ name: 'production' }],
     ...overrides,
@@ -75,7 +75,7 @@ function approval(overrides = {}) {
 }
 
 function deployment(overrides = {}) {
-  return { id: 7001, sha: SHA, environment: 'production', ...overrides };
+  return { id: 7001, sha: SHA, environment: 'production', created_at: '2026-11-08T23:54:00Z', ...overrides };
 }
 
 function deploymentStatus(overrides = {}) {
@@ -88,12 +88,21 @@ function deploymentStatus(overrides = {}) {
   };
 }
 
+function deploymentStatuses() {
+  return [
+    deploymentStatus(),
+    deploymentStatus({ id: 8002, state: 'in_progress', created_at: '2026-11-08T23:56:00Z' }),
+    deploymentStatus({ id: 8003, state: 'queued', created_at: '2026-11-08T23:55:00Z' }),
+    deploymentStatus({ id: 8004, state: 'waiting', created_at: '2026-11-08T23:54:01Z' }),
+  ];
+}
+
 function validationResponses(overrides = {}) {
   return [
     jsonResponse(run(overrides.run)),
     jsonResponse(overrides.approvals ?? [approval()]),
     jsonResponse(overrides.deployments ?? [deployment()]),
-    jsonResponse(overrides.statuses ?? [deploymentStatus()]),
+    jsonResponse(overrides.statuses ?? deploymentStatuses()),
     jsonResponse(overrides.main ?? { ref: 'refs/heads/main', object: { type: 'commit', sha: SHA } }),
   ];
 }
@@ -202,7 +211,7 @@ test('persistent shared flock admits exactly one ledger writer', { skip: process
   await once(holder, 'exit');
 });
 
-test('candidate validation accepts the reviewed test-only self-approval inside the exact attempt window', async (t) => {
+test('candidate validation accepts the real approval history shape and exact attempt deployment', async (t) => {
   const { ledger } = await ledgerFixture(t);
   ledger.recordRequest();
   ledger.admitCandidate(TRIGGER_ID, 58);
@@ -217,6 +226,7 @@ test('candidate validation accepts the reviewed test-only self-approval inside t
   assert.equal(evidence.approvals[0].reviewer.login, 'Beginning-NEW');
   assert.equal(evidence.approvals[0].reviewer.id, 183624934);
   assert.equal(evidence.approvals[0].environment, 'production');
+  assert.equal(evidence.approvals[0].marker, approval().comment);
   assert.equal(evidence.deployment.status.state, 'success');
   assert.equal(seen.length, 5);
   assert.ok(seen.every(({ options }) => options.redirect === 'manual'));
@@ -233,7 +243,7 @@ test('approval from attempt 1 cannot authorize attempt 2', async (t) => {
       run_started_at: '2026-11-08T23:56:00Z',
       updated_at: '2026-11-08T23:59:00Z',
     },
-    approvals: [approval({ submitted_at: '2026-11-08T23:55:00Z' })],
+    approvals: [approval()],
   });
   const client = new PublicGitHubClient({
     ledger,
@@ -247,12 +257,43 @@ test('approval from attempt 1 cannot authorize attempt 2', async (t) => {
   );
 });
 
+test('attempt 2 accepts its own approval and deployment while retaining attempt 1 history', async (t) => {
+  const { ledger } = await ledgerFixture(t);
+  const trigger = `${SHA}:${RUN_ID}:2`;
+  ledger.recordRequest();
+  ledger.admitCandidate(trigger, 58);
+  const currentMarker = `plane-game-cd-approved run=${RUN_ID} attempt=2 sha=${SHA}`;
+  const statusTimes = ['23:59:00', '23:58:00', '23:57:00', '23:56:01'];
+  const statuses = deploymentStatuses().map((status, index) => ({
+    ...status,
+    deployment_url: 'https://api.github.com/repos/Beginning-NEW/PlaneGameCode/deployments/7002',
+    created_at: `2026-11-08T${statusTimes[index]}Z`,
+  }));
+  const responses = validationResponses({
+    run: { run_attempt: 2, run_started_at: '2026-11-08T23:56:00Z', updated_at: '2026-11-08T23:59:00Z' },
+    approvals: [approval({ comment: currentMarker }), approval()],
+    deployments: [deployment({ id: 7002, created_at: '2026-11-08T23:56:00Z' }), deployment()],
+    statuses,
+  });
+  const client = new PublicGitHubClient({
+    ledger,
+    reservationId: trigger,
+    fetchImpl: sequenceFetch(responses),
+    now: () => NOW,
+  });
+  const evidence = await validateCandidate(client, { sha: SHA, runId: RUN_ID, runAttempt: '2' });
+  assert.equal(evidence.approvals[0].marker, currentMarker);
+  assert.equal(evidence.deployment.id, '7002');
+});
+
 for (const [name, overrides, code] of [
   ['empty approvals', { approvals: [] }, 'approval_history_rejected'],
   ['unapproved reviewer', { approvals: [approval({ user: { login: 'other', id: 2 } })] }, 'approval_reviewer_rejected'],
   ['bypassed approval', { approvals: [approval({ state: 'bypassed' })] }, 'approval_state_rejected'],
   ['rejected approval', { approvals: [approval({ state: 'rejected' })] }, 'approval_state_rejected'],
   ['unknown approval state', { approvals: [approval({ state: 'pending' })] }, 'approval_state_rejected'],
+  ['missing attempt marker', { approvals: [approval({ comment: '' })] }, 'approval_attempt_ambiguous'],
+  ['duplicate attempt marker', { approvals: [approval(), approval()] }, 'approval_attempt_ambiguous'],
   ['skipped publish run', { run: { conclusion: 'skipped' } }, 'run_evidence_rejected'],
   ['workflow dispatch', { run: { event: 'workflow_dispatch' } }, 'run_evidence_rejected'],
   ['wrong workflow id', { run: { workflow_id: 7 } }, 'run_evidence_rejected'],
@@ -261,7 +302,13 @@ for (const [name, overrides, code] of [
   ['fork head repository', { run: { head_repository: { full_name: 'fork/PlaneGameCode' } } }, 'run_evidence_rejected'],
   ['wrong SHA', { run: { head_sha: '7'.repeat(40) } }, 'run_evidence_rejected'],
   ['deployment SHA mismatch', { deployments: [deployment({ sha: '7'.repeat(40) })] }, 'deployment_ambiguous'],
+  ['deployment outside attempt window', { deployments: [deployment({ created_at: '2026-11-08T23:49:59Z' })] }, 'deployment_ambiguous'],
+  ['duplicate deployment in attempt', { deployments: [deployment(), deployment({ id: 7002 })] }, 'deployment_ambiguous'],
   ['failed deployment status', { statuses: [deploymentStatus({ state: 'failure' })] }, 'deployment_status_rejected'],
+  ['missing waiting status', { statuses: deploymentStatuses().slice(0, 3) }, 'deployment_status_rejected'],
+  ['missing in-progress status', { statuses: deploymentStatuses().filter((status) => status.state !== 'in_progress') }, 'deployment_status_rejected'],
+  ['status outside attempt window', { statuses: [deploymentStatus({ created_at: '2026-11-09T00:00:00Z' }), ...deploymentStatuses().slice(1)] }, 'deployment_status_rejected'],
+  ['status for another deployment', { statuses: [deploymentStatus({ deployment_url: 'https://api.github.com/repos/Beginning-NEW/PlaneGameCode/deployments/7002' }), ...deploymentStatuses().slice(1)] }, 'deployment_status_rejected'],
   ['moved main', { main: { ref: 'refs/heads/main', object: { type: 'commit', sha: '7'.repeat(40) } } }, 'main_moved'],
 ]) {
   test(`candidate validation rejects ${name}`, async (t) => {

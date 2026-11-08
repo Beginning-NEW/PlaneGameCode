@@ -69,7 +69,9 @@ pipeline {
               ).trim().split('\\t') as List
               if (evidence.size() != 6 || !(evidence[0] ==~ /[1-9][0-9]*/) ||
                   !(evidence[1] ==~ /[0-9a-f]{64}/) || evidence[2] != 'Beginning-NEW' ||
-                  evidence[3] != '183624934' || !(evidence[5] ==~ /[1-9][0-9]*/)) {
+                  evidence[3] != '183624934' ||
+                  evidence[4] != "plane-game-cd-approved run=${params.GITHUB_RUN_ID} attempt=${params.GITHUB_RUN_ATTEMPT} sha=${params.GITHUB_SHA}" ||
+                  !(evidence[5] ==~ /[1-9][0-9]*/)) {
                 error('Private poller revalidation returned invalid evidence')
               }
               env.ACTIONS_RUN_NUMBER = evidence[0]
