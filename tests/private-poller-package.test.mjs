@@ -61,8 +61,9 @@ test('poller package is disabled, five-minute bounded, and mutually exclusive wi
   assert.match(activationDropin, /Environment=CD_TRIGGER_MODE=poller/);
   assert.match(service, /flock --no-fork --nonblock %h\/.local\/state\/plane-game-poller\/\.shared\.lock/);
   for (const limit of ['MemoryMax=192M', 'CPUQuota=25%', 'TasksMax=32',
-    'TimeoutStartSec=240s', 'RuntimeMaxSec=240s', 'LogRateLimitIntervalSec=60s',
+    'TimeoutStartSec=240s', 'LogRateLimitIntervalSec=60s',
     'LogRateLimitBurst=50']) assert.match(service, new RegExp(limit));
+  assert.doesNotMatch(service, /RuntimeMaxSec=/);
   assert.match(pipeline, /flock --no-fork --nonblock "\$PLANE_POLLER_STATE_DIR\/\.shared\.lock"/);
   assert.match(localDeploy, /state_call\(\)[\s\S]*flock --no-fork --nonblock "\$state_lock"/);
   assert.match(promote, /state_call\(\)[\s\S]*flock --no-fork --nonblock "\$PLANE_LEDGER_LOCK_FILE"/);

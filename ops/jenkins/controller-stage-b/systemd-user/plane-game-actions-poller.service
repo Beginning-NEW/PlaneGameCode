@@ -17,7 +17,6 @@ MemoryMax=192M
 CPUQuota=25%
 TasksMax=32
 TimeoutStartSec=240s
-RuntimeMaxSec=240s
 StandardOutput=journal
 StandardError=journal
 LogRateLimitIntervalSec=60s
