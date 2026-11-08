@@ -15,6 +15,7 @@ RuntimeDirectoryMode=0700
 LoadCredential=webhook-secret:/etc/plane-game/secrets/webhook-secret
 LoadCredential=jenkins-api-token:/etc/plane-game/secrets/jenkins-api-token
 UMask=0077
+UnsetEnvironment=HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy NODE_OPTIONS NODE_USE_ENV_PROXY
 Environment=WEBHOOK_LISTEN_HOST=127.0.0.1
 Environment=WEBHOOK_LISTEN_PORT=9080
 Environment=WEBHOOK_STATE_DB=/var/lib/plane-game-webhook/deliveries.sqlite

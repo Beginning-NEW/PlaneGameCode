@@ -43,6 +43,7 @@ const scriptNames = [
   'build-image.sh',
   'generate-admin-bootstrap.sh',
   'run-controller.sh',
+  'manage-actions-poller.sh',
   'disable-stage-b.sh',
   'backup-home.sh',
   'restore-home.sh',
@@ -142,15 +143,24 @@ test('controller runtime is loopback-only, hardened, persistent, and bounded to 
 });
 
 test('SSH agent and gateway use fixed identity, file references, and disabled defaults', () => {
+  assert.deepEqual(runtime.agent.remoting, {
+    prefixStartSlaveCmd: "exec systemd-run --user --scope --quiet -p MemoryMax=384M -p CPUQuota=25% /bin/sh -c '",
+    suffixStartSlaveCmd: "'",
+    memoryMax: '384M',
+    cpuQuota: '25%',
+  });
   assert.match(casc, /name: "plane-game-cd-rootless"/);
   assert.match(casc, /remoteFS: "\/home\/plane-preflight\/jenkins-agent"/);
   assert.match(casc, /numExecutors: 1/);
   assert.match(casc, /mode: EXCLUSIVE/);
+  assert.match(casc, /prefixStartSlaveCmd: "exec systemd-run --user --scope --quiet -p MemoryMax=384M -p CPUQuota=25% \/bin\/sh -c '"/);
+  assert.match(casc, /suffixStartSlaveCmd: "'"/);
   assert.match(casc, /scope: SYSTEM/);
   assert.match(casc, /manuallyProvidedKeyVerificationStrategy:/);
   assert.match(casc, /PLANE_AGENT_PRIVATE_KEY/);
   assert.match(casc, /PLANE_AGENT_ED25519_HOST_KEY/);
-  assert.match(job, /disabled\(true\)/);
+  assert.match(job, /PLANE_CD_TRIGGER_MODE/);
+  assert.match(job, /disabled\(triggerMode == 'disabled'\)/);
   assert.match(job, /Item[.]Read', 'plane-webhook-gateway'/);
   assert.match(job, /Item[.]Build', 'plane-webhook-gateway'/);
   assert.doesNotMatch(job, /triggers\s*\{|githubPush\(\)/);
@@ -158,7 +168,11 @@ test('SSH agent and gateway use fixed identity, file references, and disabled de
   assert.match(gateway, /Restart=no/);
   assert.match(gateway, /DOCKER_HOST=unix:\/\/\/run\/user\/1003\/docker[.]sock/);
   assert.match(gateway, /JENKINS_URL=http:\/\/127[.]0[.]0[.]1:18080/);
-  assert.match(rollback, /job -> gateway -> controller/);
+  assert.match(gateway, /UnsetEnvironment=.*HTTP_PROXY.*http_proxy.*NODE_OPTIONS.*NODE_USE_ENV_PROXY/);
+  assert.match(health, /curl --proxy '' --noproxy 127[.]0[.]0[.]1 --proto '=http' --max-redirs 0/);
+  assert.match(tokenHelper, /curl --proxy '' --noproxy 127[.]0[.]0[.]1 --proto '=http' --max-redirs 0/);
+  assert.match(rollback, /job -> poller -> gateway -> controller/);
+  assert.match(rollback, /verify-disabled-restart/);
   assert.match(rollback, /first-release/);
   assert.match(rollback, /last-healthy/);
   assert.match(rollback, /checksum/);
@@ -180,9 +194,16 @@ test('negative contract rejects exposure, root units, executors, enabled jobs, b
   });
   assert.throws(check({ runtime: { ...runtime, controller: { ...runtime.controller, hostBinding: '0.0.0.0:18080:8080' } } }), /loopback-only/);
   assert.throws(check({ runtime: { ...runtime, controller: { ...runtime.controller, executors: 1 } } }), /executor/);
-  assert.throws(check({ job: job.replace('disabled(true)', 'disabled(false)') }), /default disabled/);
+  assert.throws(check({
+    job: job.replace("disabled(triggerMode == 'disabled')", 'disabled(false)'),
+  }), /job enablement/);
   assert.throws(check({ gateway: `${gateway}\n[Install]\nWantedBy=default.target\n` }), /root-level or enableable/);
   assert.throws(check({ casc: casc.replace('manuallyProvidedKeyVerificationStrategy', 'nonVerifyingKeyVerificationStrategy') }), /host-key/);
+  assert.throws(check({ casc: casc.replace('CPUQuota=25%', 'CPUQuota=50%') }), /SSH remoting JCasC/);
+  assert.throws(check({ runtime: {
+    ...runtime,
+    agent: { ...runtime.agent, remoting: { ...runtime.agent.remoting, memoryMax: '512M' } },
+  } }), /SSH remoting runtime manifest/);
   assert.throws(check({ casc: `${casc}\n-----BEGIN PRIVATE KEY-----\n` }), /plaintext credential/);
   assert.throws(check({ scripts: `${scripts}\ndocker system prune\n` }), /broad or rootful/);
 });

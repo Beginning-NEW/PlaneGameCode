@@ -2,6 +2,11 @@
   "schema": 1,
   "stage": "B",
   "defaultState": "disabled",
+  "triggerSelector": {
+    "default": "disabled",
+    "allowed": ["disabled", "poller", "webhook"],
+    "simultaneousPathsAllowed": false
+  },
   "controller": {
     "core": "2.580.2",
     "java": "21",
@@ -44,7 +49,13 @@
     "credentialScope": "SYSTEM",
     "credentialSource": "/run/secrets/PLANE_AGENT_PRIVATE_KEY",
     "hostKeyAlgorithm": "ssh-ed25519",
-    "hostKeySource": "/run/secrets/PLANE_AGENT_ED25519_HOST_KEY"
+    "hostKeySource": "/run/secrets/PLANE_AGENT_ED25519_HOST_KEY",
+    "remoting": {
+      "prefixStartSlaveCmd": "exec systemd-run --user --scope --quiet -p MemoryMax=384M -p CPUQuota=25% /bin/sh -c '",
+      "suffixStartSlaveCmd": "'",
+      "memoryMax": "384M",
+      "cpuQuota": "25%"
+    }
   },
   "gateway": {
     "serviceScope": "user",
@@ -54,6 +65,33 @@
     "principal": "plane-webhook-gateway",
     "globalPermissions": ["Overall/Read"],
     "jobPermissions": ["Job/Read", "Job/Build"]
+  },
+  "poller": {
+    "serviceScope": "user",
+    "defaultState": "disabled",
+    "interval": "5m",
+    "githubOrigins": ["https://api.github.com", "https://ghcr.io"],
+    "jenkinsUrl": "http://127.0.0.1:18080",
+    "principal": "plane-actions-poller",
+    "credentialFile": "~/.local/state/plane-game-poller/jenkins-api-token",
+    "globalPermissions": ["Overall/Read"],
+    "jobPermissions": ["Job/Read", "Job/Build"],
+    "limits": {
+      "memoryMax": "256M",
+      "cpuQuota": "25%",
+      "tasksMax": 64,
+      "timeoutStartSec": "4min",
+      "logRateLimitIntervalSec": "1min",
+      "logRateLimitBurst": 30
+    },
+    "ledgerRetention": {
+      "compactAtBytes": 4194304,
+      "hardMaxBytes": 8388608,
+      "archiveCount": 4
+    },
+    "requestCeilingPerRollingHour": 30,
+    "candidateCeilingPerRollingHour": 1,
+    "candidateGraphRequests": 16
   },
   "bootstrap": {
     "adminPrincipal": "plane-admin",

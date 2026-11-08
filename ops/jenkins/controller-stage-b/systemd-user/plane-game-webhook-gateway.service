@@ -2,8 +2,8 @@
 Description=PlaneGame Stage B rootless webhook admission gateway
 After=network-online.target
 Wants=network-online.target
-ConditionPathIsRegular=%h/.config/plane-game/credentials/webhook-secret
-ConditionPathIsRegular=%h/.config/plane-game/credentials/jenkins-api-token
+ConditionPathExists=%h/.config/plane-game/credentials/webhook-secret
+ConditionPathExists=%h/.config/plane-game/credentials/jenkins-api-token
 
 [Service]
 Type=simple
@@ -11,7 +11,9 @@ WorkingDirectory=%h/plane-game-cd
 RuntimeDirectory=plane-game-webhook
 RuntimeDirectoryMode=0700
 UMask=0077
+UnsetEnvironment=HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy NODE_OPTIONS NODE_USE_ENV_PROXY
 Environment=DOCKER_HOST=unix:///run/user/1003/docker.sock
+Environment=CD_TRIGGER_MODE=disabled
 Environment=WEBHOOK_LISTEN_HOST=127.0.0.1
 Environment=WEBHOOK_LISTEN_PORT=9080
 Environment=WEBHOOK_STATE_DB=%h/.local/state/plane-game-webhook/deliveries.sqlite

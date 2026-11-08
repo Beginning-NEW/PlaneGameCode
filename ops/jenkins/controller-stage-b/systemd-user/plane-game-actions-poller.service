@@ -1,0 +1,39 @@
+[Unit]
+Description=PlaneGame bounded public Actions poller (disabled package)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=%h/.local/state/plane-game-poller/jenkins-api-token
+ConditionPathExists=%h/.local/state/plane-game-poller/journal.ndjson
+ConditionPathExists=%h/.local/state/plane-game-poller/snapshot.json
+ConditionPathExists=%h/.local/state/plane-game-poller/.shared.lock
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/plane-game-cd
+RuntimeDirectory=plane-game-poller
+RuntimeDirectoryMode=0700
+UMask=0077
+MemoryMax=256M
+CPUQuota=25%
+TasksMax=64
+TimeoutStartSec=4min
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=1min
+LogRateLimitBurst=30
+UnsetEnvironment=HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy NODE_OPTIONS NODE_USE_ENV_PROXY
+Environment=CD_TRIGGER_MODE=disabled
+Environment=PLANE_POLLER_STATE_DIR=%h/.local/state/plane-game-poller
+Environment=PLANE_POLLER_JENKINS_CREDENTIAL_FILE=%h/.local/state/plane-game-poller/jenkins-api-token
+ExecStart=/usr/bin/flock --no-fork --nonblock %h/.local/state/plane-game-poller/.shared.lock /usr/bin/node %h/plane-game-cd/ops/jenkins/private-actions-poller.mjs
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ProtectProc=invisible
+ReadWritePaths=%h/.local/state/plane-game-poller

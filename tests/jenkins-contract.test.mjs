@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const [pipeline, verify, resolveDigest, pullHelper, publicImages, gate, preflight, sudoPolicy, localDeploy,
-  promote, docs, checks, jobDsl] = await Promise.all([
+  prePromote, promote, common, docs, checks, jobDsl] = await Promise.all([
   readFile(new URL('../Jenkinsfile', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/verify-candidate.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/resolve-public-ghcr-digest.sh', import.meta.url), 'utf8'),
@@ -13,7 +13,9 @@ const [pipeline, verify, resolveDigest, pullHelper, publicImages, gate, prefligh
   readFile(new URL('../deploy/plane-preflight', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/preflight_sudo_policy.py', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/deploy-local.sh', import.meta.url), 'utf8'),
+  readFile(new URL('../ops/jenkins/pre-promote-check.sh', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/promote.sh', import.meta.url), 'utf8'),
+  readFile(new URL('../deploy/common.sh', import.meta.url), 'utf8'),
   readFile(new URL('../RUNBOOK.md', import.meta.url), 'utf8'),
   readFile(new URL('../.github/workflows/checks.yml', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/config/plane-game-job.groovy', import.meta.url), 'utf8'),
@@ -70,6 +72,11 @@ test('webhook metadata is verified through the anonymous exact-attempt and main-
   assert.match(verify, /Protected main moved; stale candidate rejected/);
   assert.match(verify, /resolve-public-ghcr-digest[.]sh/);
   assert.doesNotMatch(verify, /Authorization:|artifacts\/|GH_API_TOKEN/);
+  for (const script of [localDeploy, prePromote]) {
+    assert.match(script, /env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy/);
+    assert.match(script, /git -c http[.]proxy= -c http[.]followRedirects=false -c http[.]sslVerify=true/);
+    assert.match(script, /fetch --no-tags https:\/\/github[.]com\/Beginning-NEW\/PlaneGameCode[.]git refs\/heads\/main/);
+  }
 });
 
 test('public registries use no login, a blank Docker config, re-resolution, and digest-only pulls', () => {
@@ -77,6 +84,16 @@ test('public registries use no login, a blank Docker config, re-resolution, and 
   assert.match(resolveDigest, /ghcr[.]io\/token[?]scope=/);
   assert.match(resolveDigest, /docker-content-digest/);
   assert.match(resolveDigest, /--retry 0.*--connect-timeout 10.*--max-time 30/s);
+  assert.match(resolveDigest, /HEADER_MAX_BYTES=1048576/);
+  assert.match(resolveDigest, /TOKEN_BODY_MAX_BYTES=65536/);
+  assert.match(resolveDigest, /MANIFEST_BODY_MAX_BYTES=1048576/);
+  assert.match(resolveDigest, /ulimit -c 0/);
+  assert.match(resolveDigest, /ulimit -f "\$CURL_FILE_LIMIT_KIB"/);
+  assert.match(resolveDigest, /--proxy '' --noproxy 'ghcr[.]io'/);
+  assert.match(resolveDigest, /--proto '=https' --max-redirs 0/);
+  assert.match(resolveDigest, /--max-filesize "\$body_max_bytes"/);
+  assert.match(resolveDigest, /wc -c < "\$headers"/);
+  assert.match(resolveDigest, /wc -c < "\$body"/);
   assert.match(resolveDigest, /rate limit is exhausted/);
   assert.match(publicImages, /^NGINX_BASE_IMAGE=.*@sha256:[0-9a-f]{64}$/m);
   assert.match(publicImages, /^GATEWAY_IMAGE=.*@sha256:[0-9a-f]{64}$/m);
@@ -91,6 +108,8 @@ test('public registries use no login, a blank Docker config, re-resolution, and 
   assert.doesNotMatch(`${localDeploy}\n${pullHelper}`, /docker login|GHCR_(?:USER|TOKEN)|GH_API_TOKEN/);
   assert.match(promote, /expected_version=\$\(printf '\{"sha":"%s"\}' "\$sha"\)/);
   assert.match(localDeploy, /deploy\/promote[.]sh/);
+  assert.match(pipeline, /script: '\. ops\/jenkins\/public-source-images[.]env; printf \\'%s\\' "\$GATEWAY_IMAGE"'/);
+  assert.doesNotMatch(pipeline, /script: "[^"]*\$GATEWAY_IMAGE/);
   assert.doesNotMatch(`${pipeline}\n${verify}\n${gate}\n${localDeploy}\n${pullHelper}\n${docs}`, /ACR_|aliyuncs/i);
   assert.doesNotMatch(`${localDeploy}\n${pullHelper}`, /GITHUB_TOKEN/);
 });
@@ -112,11 +131,14 @@ test('same-host executor and resource stop gates match the operations budget', (
   assert.ok(preGate >= 0 && preGate < promoter);
   assert.match(pipeline, /"ops\/jenkins\/resource-gate[.]sh"/);
   assert.match(localDeploy, /"\$post_cd_resource_gate"/);
-  const health = promote.indexOf('curl -fsS --max-time 5 "http://127.0.0.1:$port/healthz"');
+  const health = promote.indexOf('loopback_curl -fsS --max-time 5 "http://127.0.0.1:$port/healthz"');
   const postGate = promote.indexOf('bash "$post_cd_resource_gate"');
   const commitOrder = promote.indexOf('> "$PLANE_GAME_RUNTIME_DIR/last_run_number"');
   const releaseTrap = promote.lastIndexOf('trap - EXIT');
   assert.ok(health >= 0 && health < postGate && postGate < commitOrder && commitOrder < releaseTrap);
+  for (const script of [common, promote]) {
+    assert.match(script, /curl --proxy '' --noproxy 127[.]0[.]0[.]1 --proto '=http' --max-redirs 0/);
+  }
   assert.match(docs, /p5 `MemAvailable >= 3[.]5 GiB`/);
   assert.match(docs, /p95 CPU busy.*2/);
   assert.match(docs, /`MemAvailable < 2 GiB`.*5 分钟/);
@@ -133,6 +155,7 @@ test('Actions gives PR checks no CD secret path and main is the only image publi
   const publish = checks.split(/^  publish:$/m)[1] ?? '';
   assert.match(checks, /^permissions:\s+contents: read/m);
   assert.match(publish, /packages: write/);
+  assert.match(publish, /^    environment: production$/m);
   assert.match(
     publish,
     /actions\/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4[.]4[.]0/,

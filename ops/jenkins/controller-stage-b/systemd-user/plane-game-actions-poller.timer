@@ -1,0 +1,12 @@
+[Unit]
+Description=PlaneGame five-minute Actions poll schedule (disabled package)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=1s
+Persistent=false
+Unit=plane-game-actions-poller.service
+
+[Install]
+WantedBy=timers.target

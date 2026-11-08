@@ -5,6 +5,11 @@ jenkins:
   slaveAgentPort: -1
   quietPeriod: 5
   disableRememberMe: true
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: "CD_TRIGGER_MODE"
+            value: "${trim:${readFile:/run/secrets/PLANE_CD_TRIGGER_MODE}}"
   securityRealm:
     local:
       allowsSignup: false
@@ -36,6 +41,8 @@ jenkins:
             port: 22
             credentialsId: "plane-game-agent-ssh"
             javaPath: "/usr/bin/java"
+            prefixStartSlaveCmd: "exec systemd-run --user --scope --quiet -p MemoryMax=384M -p CPUQuota=25% /bin/sh -c '"
+            suffixStartSlaveCmd: "'"
             sshHostKeyVerificationStrategy:
               manuallyProvidedKeyVerificationStrategy:
                 key: "${trim:${readFile:/run/secrets/PLANE_AGENT_ED25519_HOST_KEY}}"

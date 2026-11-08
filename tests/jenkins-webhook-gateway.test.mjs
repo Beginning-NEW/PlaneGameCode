@@ -6,17 +6,19 @@ import test from 'node:test';
 import { JenkinsEnqueuer } from '../ops/jenkins/webhook-gateway.mjs';
 import { JenkinsApiTokenProvider } from '../ops/jenkins/webhook-admission.mjs';
 
-const baseUrl = 'http://jenkins.test';
+const baseUrl = 'http://127.0.0.1:18080';
 const deliveryId = '123e4567-e89b-42d3-a456-426614174000';
 const candidateSha = '0123456789abcdef0123456789abcdef01234567';
 const runId = '123';
 const runAttempt = '1';
 const actions = [{
   parameters: [
-    { name: 'CANDIDATE_SHA', value: candidateSha },
-    { name: 'ACTIONS_RUN_ID', value: runId },
-    { name: 'ACTIONS_RUN_ATTEMPT', value: runAttempt },
-    { name: 'WEBHOOK_DELIVERY', value: deliveryId },
+    { name: 'TRIGGER_SOURCE', value: 'webhook' },
+    { name: 'GITHUB_SHA', value: candidateSha },
+    { name: 'GITHUB_RUN_ID', value: runId },
+    { name: 'GITHUB_RUN_ATTEMPT', value: runAttempt },
+    { name: 'TRIGGER_ID', value: `webhook:${deliveryId}` },
+    { name: 'WEBHOOK_DELIVERY_UUID', value: deliveryId },
   ],
 }];
 
@@ -88,7 +90,7 @@ test('enqueue accepts only a same-origin numeric queue Location and persists its
     runId: '123',
     runAttempt: '1',
     deliveryId,
-  }), { queueId: '42', queueUrl: 'http://jenkins.test/queue/item/42/' });
+  }), { queueId: '42', queueUrl: 'http://127.0.0.1:18080/queue/item/42/' });
   assert.equal(accepted.calls.length, 1);
   assert.equal(accepted.calls[0].method, 'POST');
 

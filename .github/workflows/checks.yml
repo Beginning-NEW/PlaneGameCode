@@ -45,6 +45,7 @@ jobs:
           curl --fail --show-error "http://127.0.0.1:${port}/healthz"
   publish:
     name: Publish protected-main candidate
+    environment: production
     needs: verify
     if: >-
       github.event_name == 'push' &&

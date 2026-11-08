@@ -58,6 +58,8 @@ test('deployment entrypoints reject missing or tampered fixed ports before side 
   const digest = `sha256:${'b'.repeat(64)}`;
   const gateway = `nginxinc/nginx-unprivileged@sha256:${'c'.repeat(64)}`;
   const localArgs = [
+    'webhook',
+    '/unused-poller-state',
     sha,
     'ghcr.io/beginning-new/planegamecode',
     digest,
@@ -81,10 +83,10 @@ test('deployment entrypoints reject missing or tampered fixed ports before side 
 
   for (const port of ['', '9999']) {
     const localResult = run(join(root, 'ops/jenkins/deploy-local.sh'), [
-      ...localArgs.slice(0, 3),
+      ...localArgs.slice(0, 5),
       port,
-      ...localArgs.slice(4),
-    ]);
+      ...localArgs.slice(6),
+    ], { env: { CD_TRIGGER_MODE: 'webhook' } });
     assert.notEqual(localResult.status, 0);
     assert.match(localResult.stderr, /DEPLOY_PORT must be the versioned value 18081/);
 
@@ -132,13 +134,24 @@ test('main movement after image pull fails the immediate pre-promote check', asy
 printf '%s\\t%s\\t%s\\t%s\\n' '${digest}' '${gateway}' '77' '1'
 `);
   await executable(join(bin, 'git'), `#!/usr/bin/env bash
-if [[ "$1" == fetch ]]; then exit 0; fi
+if [[ "$*" == '-c http.proxy= -c http.followRedirects=false -c http.sslVerify=true fetch --no-tags https://github.com/Beginning-NEW/PlaneGameCode.git refs/heads/main' ]]; then
+  [[ -z "\${HTTP_PROXY+x}\${HTTPS_PROXY+x}\${ALL_PROXY+x}\${http_proxy+x}\${https_proxy+x}\${all_proxy+x}" ]]
+  exit 0
+fi
 if [[ "$1 $2" == 'rev-parse FETCH_HEAD' ]]; then printf '%s\\n' '${moved}'; exit 0; fi
 exit 2
 `);
   const result = run(join(scripts, 'pre-promote-check.sh'), [sha, '9001', '1', digest, gateway, '77'], {
     cwd: work,
     bin,
+    env: {
+      HTTP_PROXY: 'http://127.0.0.1:9',
+      HTTPS_PROXY: 'http://127.0.0.1:9',
+      ALL_PROXY: 'socks5h://127.0.0.1:9',
+      http_proxy: 'http://127.0.0.1:9',
+      https_proxy: 'http://127.0.0.1:9',
+      all_proxy: 'socks5h://127.0.0.1:9',
+    },
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /SCM main moved after image pull/);

@@ -18,6 +18,32 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
     ? JSON.parse(credentialManifest) : credentialManifest;
   const controller = manifest.controller;
   if (manifest.defaultState !== 'disabled') throw new Error('Stage B must default disabled');
+  if (manifest.triggerSelector?.default !== 'disabled' ||
+      manifest.triggerSelector?.allowed?.join(',') !== 'disabled,poller,webhook' ||
+      manifest.triggerSelector?.simultaneousPathsAllowed !== false) {
+    throw new Error('trigger selector contract changed');
+  }
+  if (manifest.poller?.defaultState !== 'disabled' || manifest.poller?.interval !== '5m' ||
+      manifest.poller?.requestCeilingPerRollingHour !== 30 ||
+      manifest.poller?.candidateCeilingPerRollingHour !== 1 || manifest.poller?.candidateGraphRequests !== 16 ||
+      manifest.poller?.credentialFile !== '~/.local/state/plane-game-poller/jenkins-api-token') {
+    throw new Error('poller budget/default contract changed');
+  }
+  if (manifest.poller?.limits?.memoryMax !== '256M' || manifest.poller?.limits?.cpuQuota !== '25%' ||
+      manifest.poller?.limits?.tasksMax !== 64 || manifest.poller?.limits?.timeoutStartSec !== '4min' ||
+      manifest.poller?.limits?.logRateLimitIntervalSec !== '1min' ||
+      manifest.poller?.limits?.logRateLimitBurst !== 30 ||
+      manifest.poller?.ledgerRetention?.compactAtBytes !== 4194304 ||
+      manifest.poller?.ledgerRetention?.hardMaxBytes !== 8388608 ||
+      manifest.poller?.ledgerRetention?.archiveCount !== 4) {
+    throw new Error('poller runtime or retention bounds changed');
+  }
+  const remoting = manifest.agent?.remoting;
+  const remotingPrefix = "exec systemd-run --user --scope --quiet -p MemoryMax=384M -p CPUQuota=25% /bin/sh -c '";
+  if (remoting?.prefixStartSlaveCmd !== remotingPrefix || remoting?.suffixStartSlaveCmd !== "'" ||
+      remoting?.memoryMax !== '384M' || remoting?.cpuQuota !== '25%') {
+    throw new Error('SSH remoting runtime manifest changed');
+  }
   if (controller.hostBinding !== '127.0.0.1:18080:8080') throw new Error('controller must be loopback-only on 18080');
   if (controller.forbiddenHostPorts.join(',') !== '8080,50000') throw new Error('forbidden port contract changed');
   if (controller.executors !== 0 || controller.inboundAgentPort !== -1) throw new Error('controller executor or agent port changed');
@@ -49,17 +75,30 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(casc, /remoteFS: "\/home\/plane-preflight\//, 'agent remote root is not bounded');
   requireMatch(casc, /numExecutors: 1/, 'agent must have one executor');
   requireMatch(casc, /mode: EXCLUSIVE/, 'agent must be matching-label-only');
+  if (!casc.includes(`prefixStartSlaveCmd: "${remotingPrefix}"`) ||
+      !casc.includes(`suffixStartSlaveCmd: "${remoting.suffixStartSlaveCmd}"`)) {
+    throw new Error('SSH remoting JCasC differs from the runtime manifest');
+  }
   requireMatch(casc, /scope: SYSTEM/, 'agent credential must be SYSTEM scoped');
   requireMatch(casc, /privateKeySource:\s*directEntry:/, 'JCasC SSH private-key source must use directEntry');
   requireMatch(casc, /manuallyProvidedKeyVerificationStrategy:/, 'fixed host-key verifier missing');
   requireMatch(casc, /sshHostKeyVerificationStrategy:/, 'SSH launcher host-key field is missing');
+  requireMatch(casc, /key: "CD_TRIGGER_MODE"[\s\S]*PLANE_CD_TRIGGER_MODE/,
+    'global trigger selector must use the fixed persisted file');
   forbid(casc, /\s+hostKeyVerificationStrategy:/, 'obsolete SSH launcher host-key field is unsupported');
   requireMatch(init, /getSshHostKeyVerificationStrategy\(\)/, 'SSH launcher readiness check uses an obsolete getter');
+  requireMatch(init, /getPrefixStartSlaveCmd\(\)/, 'SSH launcher readiness must verify the bounded command');
+  requireMatch(init, /getSuffixStartSlaveCmd\(\)/, 'SSH launcher readiness must verify the bounded command');
+  if (!init.includes(`launcher.getPrefixStartSlaveCmd() == "${remotingPrefix}"`) ||
+      !init.includes(`launcher.getSuffixStartSlaveCmd() == "${remoting.suffixStartSlaveCmd}"`)) {
+    throw new Error('live SSH launcher readiness differs from the runtime manifest');
+  }
   requireMatch(casc, /PLANE_AGENT_ED25519_HOST_KEY/, 'Ed25519 host-key file reference missing');
   for (const source of [
     'PLANE_AGENT_HOST',
     'PLANE_AGENT_ED25519_HOST_KEY',
     'PLANE_AGENT_PRIVATE_KEY',
+    'PLANE_CD_TRIGGER_MODE',
   ]) {
     if (!casc.includes(`\${trim:\${readFile:/run/secrets/${source}}}`)) {
       throw new Error(`strict file secret source missing for ${source}`);
@@ -67,12 +106,23 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   }
   forbid(casc, /scope: GLOBAL|PLANE_GITHUB_|PLANE_GHCR_/, 'public-source controller must not define GitHub or registry credentials');
   forbid(casc, /nonVerifyingKeyVerificationStrategy|manuallyTrustedKeyVerificationStrategy/, 'host-key bypass is forbidden');
-  requireMatch(job, /disabled\(true\)/, 'job must default disabled');
+  requireMatch(job, /PLANE_CD_TRIGGER_MODE/, 'job must read the fixed persisted selector');
+  requireMatch(job, /disabled\(triggerMode == 'disabled'\)/, 'job enablement must follow the persisted selector');
   requireMatch(job, /userPermission\('hudson[.]model[.]Item[.]Read', 'plane-webhook-gateway'\)/,
     'gateway folder/job grants must identify a user');
   requireMatch(job, /userPermission\('hudson[.]model[.]Item[.]Build', 'plane-webhook-gateway'\)/,
     'gateway job build grant must identify a user');
   requireMatch(job, /folder\('plane-game'\)[\s\S]*Item[.]Read[\s\S]*plane-webhook-gateway/, 'gateway folder read grant missing');
+  requireMatch(job, /userPermission\('hudson[.]model[.]Item[.]Read', 'plane-actions-poller'\)/,
+    'poller folder/job read grant missing');
+  requireMatch(job, /userPermission\('hudson[.]model[.]Item[.]Build', 'plane-actions-poller'\)/,
+    'poller job build grant missing');
+  requireMatch(job, /folder\('plane-game'\)[\s\S]*Item[.]Read[\s\S]*plane-actions-poller/,
+    'poller folder read grant missing');
+  forbid(job, /Item[.](Configure|Delete).*plane-actions-poller/, 'poller has a forbidden job grant');
+  for (const parameter of ['TRIGGER_SOURCE', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'TRIGGER_ID', 'WEBHOOK_DELIVERY_UUID']) {
+    requireMatch(job, new RegExp(`stringParam\\('${parameter}'`), `poller-compatible parameter missing: ${parameter}`);
+  }
   requireMatch(job, /Item[.]Read'[\s\S]*plane-webhook-gateway[\s\S]*Item[.]Build'[\s\S]*plane-webhook-gateway/, 'gateway job read/build grants missing');
   requireMatch(job, /url\('https:\/\/github[.]com\/Beginning-NEW\/PlaneGameCode[.]git'\)/, 'anonymous SCM allowlist is missing');
   forbid(job, /credentials\(/, 'public SCM checkout must not use a credential ID');
@@ -82,6 +132,10 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(init, /fresh home requires the one-time admin bcrypt bootstrap file/, 'fresh-home fail-closed gate missing');
   requireMatch(init, /createAccountWithHashedPassword\(adminId, hashedPassword\)/, 'bcrypt bootstrap API missing');
   requireMatch(init, /bootstrap file must be removed after its one-time application/, 'one-time bootstrap replay rejection missing');
+  requireMatch(init, /plane-actions-poller/, 'dedicated poller principal readiness check missing');
+  requireMatch(init, /poller global authorization is not least privilege/, 'poller global denial proof missing');
+  requireMatch(init, /poller job authorization or selector state is invalid/, 'poller job denial proof missing');
+
   requireMatch(init, /CredentialsProvider[.]VIEW/, 'gateway credential-view denial proof missing');
   requireMatch(init, /Jenkins[.]RUN_SCRIPTS/, 'gateway Script Console denial proof missing');
   requireMatch(init, /stage-b-ready-v2/, 'authorization readiness marker missing');
@@ -118,6 +172,8 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
     throw new Error('public-source no-auth metadata is incomplete');
   }
   requireMatch(tokenHelper, /jenkins_url=http:\/\/127[.]0[.]0[.]1:18080/, 'token helper is not fixed loopback-only');
+  requireMatch(tokenHelper, /curl --proxy '' --noproxy 127[.]0[.]0[.]1 --proto '=http' --max-redirs 0/,
+    'token helper must bypass inherited proxies');
   requireMatch(tokenHelper, /create\|rotate\|prune\|revoke/, 'token lifecycle operations are incomplete');
   requireMatch(tokenHelper, /flock -x 9/, 'token lifecycle lock is missing');
   requireMatch(tokenHelper, /sync -f "\$token_tmp"[\s\S]*mv -f -- "\$token_tmp" "\$token_file"/,
@@ -132,6 +188,10 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
 
   requireMatch(gateway, /DOCKER_HOST=unix:\/\/\/run\/user\/1003\/docker[.]sock/, 'gateway must use rootless Docker');
   requireMatch(gateway, /JENKINS_URL=http:\/\/127[.]0[.]0[.]1:18080/, 'gateway must reach loopback Jenkins only');
+  requireMatch(gateway, /UnsetEnvironment=.*HTTP_PROXY.*http_proxy.*NODE_OPTIONS.*NODE_USE_ENV_PROXY/,
+    'gateway must clear inherited proxy and Node proxy-enablement variables');
+  requireMatch(health, /curl --proxy '' --noproxy 127[.]0[.]0[.]1 --proto '=http' --max-redirs 0/,
+    'controller healthcheck must bypass inherited proxies');
   requireMatch(gateway, /Restart=no/, 'gateway must not auto-restart');
   requireMatch(gateway, /WEBHOOK_SECRET_FILE=%h\/.config\/plane-game\/credentials\/webhook-secret/, 'gateway credential must be a file reference');
   forbid(gateway, /^User=|^Group=|^\[Install\]|^WantedBy=/m, 'root-level or enableable gateway unit is forbidden');
@@ -157,7 +217,7 @@ async function main() {
     readFile(new URL('healthcheck.sh', directory), 'utf8'),
     readFile(new URL('manage-gateway-token.sh', directory), 'utf8'),
     readFile(new URL('credential-manifest.json', directory), 'utf8'),
-    ...['build-image.sh', 'generate-admin-bootstrap.sh', 'run-controller.sh', 'disable-stage-b.sh', 'backup-home.sh',
+    ...['build-image.sh', 'generate-admin-bootstrap.sh', 'run-controller.sh', 'manage-actions-poller.sh', 'disable-stage-b.sh', 'backup-home.sh',
       'restore-home.sh', 'rollback-stage-b.sh'].map((file) => readFile(new URL(file, directory), 'utf8')),
   ]);
   assertStageBContract({ runtime, dockerfile, casc, job, gateway, scripts: scriptTexts.join('\n'),

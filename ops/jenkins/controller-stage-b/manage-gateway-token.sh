@@ -18,6 +18,9 @@ token_file=${2:-"$HOME/.config/plane-game/credentials/jenkins-api-token"}
 jenkins_url=http://127.0.0.1:18080
 gateway_user=plane-webhook-gateway
 admin_user=plane-admin
+loopback_curl() {
+  curl --proxy '' --noproxy 127.0.0.1 --proto '=http' --max-redirs 0 "$@"
+}
 
 [[ "$(id -u)" == "$PLANE_PREFLIGHT_UID" ]] || fail 'must run as UID 1003'
 [[ "$(id -un)" == "$PLANE_PREFLIGHT_USER" ]] || fail 'must run as plane-preflight'
@@ -87,7 +90,7 @@ write_netrc() {
 gateway_post() {
   local endpoint=$1
   shift
-  curl --fail --silent --show-error \
+  loopback_curl --fail --silent --show-error \
     --netrc --netrc-file "$scratch/auth.netrc" \
     --request POST "$jenkins_url$endpoint" "$@"
 }
@@ -95,14 +98,14 @@ gateway_post() {
 create_token() {
   [[ ! -s "$token_file" ]] || fail 'create requires the existing token target to be empty'
   printf 'Jenkins will prompt twice for the plane-admin bootstrap password; input is not stored.\n' >&2
-  crumb_json=$(curl --fail --silent --show-error \
+  crumb_json=$(loopback_curl --fail --silent --show-error \
     --cookie-jar "$scratch/cookies" --user "$admin_user" \
     "$jenkins_url/crumbIssuer/api/json")
   crumb_field=$(printf '%s' "$crumb_json" | json_field crumbRequestField)
   crumb_value=$(printf '%s' "$crumb_json" | json_field crumb)
   printf 'header = "%s: %s"\n' "$crumb_field" "$crumb_value" >"$scratch/crumb.conf"
   chmod 600 "$scratch/crumb.conf"
-  response=$(curl --fail --silent --show-error \
+  response=$(loopback_curl --fail --silent --show-error \
     --cookie "$scratch/cookies" --user "$admin_user" --config "$scratch/crumb.conf" \
     --request POST --data-urlencode 'newTokenName=plane-game-webhook-gateway-host' \
     "$jenkins_url/user/$gateway_user/descriptorByName/jenkins.security.ApiTokenProperty/generateNewToken")

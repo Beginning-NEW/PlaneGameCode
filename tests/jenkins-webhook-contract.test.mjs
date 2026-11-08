@@ -35,7 +35,7 @@ test('webhook admission validates HMAC and persists atomic delivery and run uniq
     'x-hub-signature-256',
     'x-github-delivery',
     '/github/workflow-run',
-    'WEBHOOK_DELIVERY',
+    'WEBHOOK_DELIVERY_UUID',
     '/buildWithParameters',
     'reconcile(record)',
     'normalizeQueueIdentity(location)',
@@ -49,11 +49,11 @@ test('webhook admission validates HMAC and persists atomic delivery and run uniq
     '/usr/bin/flock --no-fork --nonblock',
     'ProtectSystem=strict',
   ]) assert.ok(service.includes(value), `missing service control: ${value}`);
-  for (const value of ["stringParam('WEBHOOK_DELIVERY'", 'disabled(true)']) {
+  for (const value of ["stringParam('WEBHOOK_DELIVERY_UUID'", "stringParam('TRIGGER_SOURCE'", 'disabled(true)']) {
     assert.ok(jobDsl.includes(value), `missing webhook contract value: ${value}`);
   }
   assert.doesNotMatch(jobDsl, /genericTrigger|triggers\s*\{/);
-  assert.ok(pipeline.includes('params.WEBHOOK_DELIVERY ==~ /(?i)[0-9a-f]{8}'));
+  assert.ok(pipeline.includes('params.WEBHOOK_DELIVERY_UUID ==~ /(?i)[0-9a-f]{8}'));
 });
 
 test('offline webhook dry-run queues once and rejects without logging secrets', () => {
@@ -67,7 +67,7 @@ test('ordering and public-source documentation preserve the reviewed safety boun
   assert.match(verify, /api_run_number/);
   assert.match(verify, /actions\/runs\/\$run_id\/attempts\/\$run_attempt/);
   assert.doesNotMatch(verify, /Authorization:|GH_API_TOKEN|artifacts\//);
-  assert.match(pipeline, /ACTIONS_RUN_NUMBER.*ACTIONS_RUN_ATTEMPT/s);
+  assert.match(pipeline, /ACTIONS_RUN_NUMBER.*GITHUB_RUN_ATTEMPT/s);
   for (const value of [
     'anonymous HTTPS',
     'exact-attempt',

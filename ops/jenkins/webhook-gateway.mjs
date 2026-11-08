@@ -8,9 +8,11 @@ import {
   JenkinsApiTokenProvider,
   WebhookAdmission,
 } from './webhook-admission.mjs';
+import { directLoopbackFetch } from './lib/direct-loopback-http.mjs';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const JOB_PATH = '/job/plane-game/job/main-cd';
+const JENKINS_ORIGIN = 'http://127.0.0.1:18080';
 
 function required(name) {
   const value = process.env[name];
@@ -24,10 +26,12 @@ function parametersFrom(actions) {
 
 function hasCandidateIdentity(actions, record) {
   const expected = new Map([
-    ['CANDIDATE_SHA', record.candidate_sha],
-    ['ACTIONS_RUN_ID', record.run_id],
-    ['ACTIONS_RUN_ATTEMPT', record.run_attempt],
-    ['WEBHOOK_DELIVERY', record.delivery_id],
+    ['TRIGGER_SOURCE', 'webhook'],
+    ['GITHUB_SHA', record.candidate_sha],
+    ['GITHUB_RUN_ID', record.run_id],
+    ['GITHUB_RUN_ATTEMPT', record.run_attempt],
+    ['TRIGGER_ID', `webhook:${record.delivery_id}`],
+    ['WEBHOOK_DELIVERY_UUID', record.delivery_id],
   ]);
   const parameters = parametersFrom(actions);
   return [...expected].every(([name, value]) => {
@@ -45,11 +49,11 @@ function uniqueMatch(items, predicate, multipleCode) {
 }
 
 export class JenkinsEnqueuer {
-  constructor({ baseUrl, user, tokenProvider, fetchImpl = fetch }) {
+  constructor({ baseUrl, user, tokenProvider, fetchImpl = directLoopbackFetch }) {
     const parsed = new URL(baseUrl);
-    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password ||
+    if (parsed.origin !== JENKINS_ORIGIN || parsed.username || parsed.password ||
         parsed.search || parsed.hash || !['', '/'].includes(parsed.pathname)) {
-      throw new Error('JENKINS_URL must be an HTTP(S) origin without credentials or a path');
+      throw new Error('JENKINS_URL must be the fixed loopback Jenkins origin');
     }
     this.baseUrl = parsed.origin;
     this.user = user;
@@ -188,10 +192,12 @@ export class JenkinsEnqueuer {
 
   async enqueue(candidate) {
     const query = new URLSearchParams({
-      CANDIDATE_SHA: candidate.candidateSha,
-      ACTIONS_RUN_ID: candidate.runId,
-      ACTIONS_RUN_ATTEMPT: candidate.runAttempt,
-      WEBHOOK_DELIVERY: candidate.deliveryId,
+      TRIGGER_SOURCE: 'webhook',
+      GITHUB_SHA: candidate.candidateSha,
+      GITHUB_RUN_ID: candidate.runId,
+      GITHUB_RUN_ATTEMPT: candidate.runAttempt,
+      TRIGGER_ID: `webhook:${candidate.deliveryId}`,
+      WEBHOOK_DELIVERY_UUID: candidate.deliveryId,
     });
     const result = await this.request(`${JOB_PATH}/buildWithParameters?${query}`, { method: 'POST' });
     const location = result.headers.get('location');
@@ -246,6 +252,7 @@ export function createGateway({ admission }) {
 }
 
 function main() {
+  if (process.env.CD_TRIGGER_MODE !== 'webhook') throw new Error('Webhook trigger mode is not exclusively enabled');
   const store = new DeliveryStore(required('WEBHOOK_STATE_DB'));
   const admission = new WebhookAdmission({
     webhookSecretProvider: new FileSecretProvider(required('WEBHOOK_SECRET_FILE')),
