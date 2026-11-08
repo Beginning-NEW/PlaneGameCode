@@ -56,7 +56,7 @@ install -m 0600 /dev/null "$HOME/.local/state/plane-game-poller/jenkins-api-toke
 
 `create-poller-token.sh create|rotate|prune|revoke` holds a private lock and stores one atomic `{version,username,token,uuid}` document. `create` uses the interactive admin bootstrap only to mint the first token. `rotate` authenticates with the current file-backed token, publishes the new token/UUID with fsync-before-rename, then revokes every prior token. If that final revocation is interrupted, `prune` completes it from the published UUID. `revoke` revokes all poller tokens and atomically empties the existing target. Token values are carried only by owner-only files and netrc, never argv, environment, logs, images, or service definitions. These commands remain a separately approved Operations action.
 
-The poller oneshot is bounded by `MemoryMax=192M`, `CPUQuota=25%`, `TasksMax=32`, and the effective oneshot execution limit `TimeoutStartSec=240s`, safely below the five-minute cadence. (`RuntimeMaxSec` does not apply to `Type=oneshot`, so the unit does not claim it as a control.) Unit-local journal output is rate-limited to 50 messages per 60 seconds; the ledger procedure above bounds package-owned persistent audit storage.
+The poller oneshot is bounded by `MemoryMax=256M`, `CPUQuota=25%`, `TasksMax=64`, and the effective oneshot execution limit `TimeoutStartSec=4min`, safely below the five-minute cadence. (`RuntimeMaxSec` does not apply to `Type=oneshot`, so the unit does not claim it as a control.) Unit-local journal output is rate-limited to 30 messages per minute; the ledger procedure above bounds package-owned persistent audit storage.
 
 ## Persistent poller activation gate
 

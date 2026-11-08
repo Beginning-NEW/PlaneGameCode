@@ -103,7 +103,7 @@ bash ops/jenkins/controller-stage-b/manage-gateway-token.sh revoke
 
 ## Separately approved persistent poller activation
 
-The packaged poller service remains disabled by default. The oneshot is bounded to 192 MiB, 25% CPU, 32 tasks, and 240 seconds, with unit-local journal rate limiting. The timer has an install target; the reviewed poller override is installed only by `manage-actions-poller.sh activate`. That helper requires user linger, an inactive gateway, the canonical checkout, the complete owner-only poller state, and the approved controller directory. It persists selector `poller`, verifies the live Jenkins selector and enabled job with a fixed script, and only then enables the timer. Any partial failure restores disabled state. Rollback invokes the same helper before stopping the gateway/controller.
+The packaged poller service remains disabled by default. The oneshot is bounded to 256 MiB, 25% CPU, 64 tasks, and four minutes, with unit-local journal rate limiting at 30 messages per minute. The timer has an install target; the reviewed poller override is installed only by `manage-actions-poller.sh activate`. That helper requires user linger, an inactive gateway, the canonical checkout, the complete owner-only poller state, and the approved controller directory. It persists selector `poller`, verifies the live Jenkins selector and enabled job with a fixed script, and only then enables the timer. Any partial failure restores disabled state. Rollback invokes the same helper before stopping the gateway/controller.
 
 The poller credential helper has one locked lifecycle and never carries token values in argv or environment:
 
