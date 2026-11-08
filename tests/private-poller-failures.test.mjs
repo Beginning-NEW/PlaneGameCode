@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -122,6 +122,23 @@ test('Jenkins Basic auth exists only in the request header and credentials remai
   assert.ok(!Object.values(process.env).some((value) => String(value).includes('T'.repeat(32))));
   assert.match(seen[0].options.headers.authorization, /^Basic /);
   assert.equal(seen[0].options.redirect, 'manual');
+});
+
+test('Jenkins credentials reject writable or symlinked ancestor components before use', { skip: process.platform === 'win32' }, async (t) => {
+  const { parent } = await fixture(t);
+  const unsafe = join(parent, 'unsafe');
+  const credentials = join(unsafe, 'credentials');
+  await mkdir(credentials, { recursive: true, mode: 0o700 });
+  await chmod(unsafe, 0o770);
+  const token = join(credentials, 'jenkins-api-token');
+  await writeFile(token, JSON.stringify({ version: 1, username: 'plane-actions-poller', token: 'X'.repeat(32) }), { mode: 0o600 });
+  assert.throws(() => new JenkinsCredentialProvider(token).get(), { code: 'credential_unavailable' });
+
+  await chmod(unsafe, 0o700);
+  const linkedParent = join(parent, 'linked-parent');
+  await symlink(credentials, linkedParent, 'dir');
+  const linkedToken = join(linkedParent, 'jenkins-api-token');
+  assert.throws(() => new JenkinsCredentialProvider(linkedToken).get(), { code: 'credential_unavailable' });
 });
 
 for (const [name, response, code] of [

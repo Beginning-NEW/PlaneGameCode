@@ -25,7 +25,8 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   }
   if (manifest.poller?.defaultState !== 'disabled' || manifest.poller?.interval !== '5m' ||
       manifest.poller?.requestCeilingPerRollingHour !== 30 ||
-      manifest.poller?.candidateCeilingPerRollingHour !== 1 || manifest.poller?.candidateGraphRequests !== 16) {
+      manifest.poller?.candidateCeilingPerRollingHour !== 1 || manifest.poller?.candidateGraphRequests !== 16 ||
+      manifest.poller?.credentialFile !== '~/.local/state/plane-game-poller/jenkins-api-token') {
     throw new Error('poller budget/default contract changed');
   }
   if (controller.hostBinding !== '127.0.0.1:18080:8080') throw new Error('controller must be loopback-only on 18080');

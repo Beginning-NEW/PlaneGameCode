@@ -36,13 +36,14 @@ Runtime labels and the release record carry the full tuple and digest. A termina
 
 ## Credential and package lifecycle
 
-The dedicated Jenkins principal is `plane-actions-poller` with only inherited `Overall/Read` and explicit `Job/Read` plus `Job/Build` on `plane-game/main-cd`. Its username and API token live together in one pre-created owner-only `0600` JSON file under a `0700` directory. They do not appear in arguments, environment variables, service definitions, logs, images, or Docker metadata. API-token requests do not fetch crumbs and have no password, anonymous, or broader-credential fallback.
+The dedicated Jenkins principal is `plane-actions-poller` with only inherited `Overall/Read` and explicit `Job/Read` plus `Job/Build` on `plane-game/main-cd`. Its username and API token live together in `~/.local/state/plane-game-poller/jenkins-api-token`, a pre-created owner-only `0600` JSON file inside the persistent `0700` poller state directory. The provider revalidates the absolute path, every ancestor component, owner/mode, regular-file identity, link count, bounded size, and schema on every read. The credentials do not appear in arguments, environment variables, service definitions, logs, images, or Docker metadata. API-token requests do not fetch crumbs and have no password, anonymous, or broader-credential fallback.
 
 An operator may initialize an empty state directory while all paths remain disabled:
 
 ```sh
 install -d -m 0700 "$HOME/.local/state/plane-game-poller"
 node ops/jenkins/private-actions-poller.mjs --initialize "$HOME/.local/state/plane-game-poller"
+install -m 0600 /dev/null "$HOME/.local/state/plane-game-poller/jenkins-api-token"
 ```
 
 `create-poller-token.sh` writes only to an already-created empty owner-only target and uses the interactive admin bootstrap solely for token creation. Do not run it as part of this implementation review. Rotation/revocation and mode enablement require a separately reviewed Operations procedure.

@@ -35,6 +35,7 @@ test('poller package is disabled, five-minute bounded, and mutually exclusive wi
   assert.match(casc, /key: "CD_TRIGGER_MODE"\s+value: "disabled"/);
   assert.match(service, /Environment=CD_TRIGGER_MODE=disabled/);
   assert.match(webhookService, /Environment=CD_TRIGGER_MODE=disabled/);
+  assert.match(service, /PLANE_POLLER_JENKINS_CREDENTIAL_FILE=%h\/.local\/state\/plane-game-poller\/jenkins-api-token/);
   assert.match(timer, /OnBootSec=5min[\s\S]*OnUnitActiveSec=5min/);
   assert.doesNotMatch(`${service}\n${timer}`, /^\[Install\]|^WantedBy=/m);
   assert.match(service, /flock --no-fork --nonblock %h\/.local\/state\/plane-game-poller\/\.shared\.lock/);
@@ -72,6 +73,7 @@ test('disabled or missing mode refuses both executable trigger paths before star
 
 test('credential helper writes one file-backed username/token document without argv or environment secrets', () => {
   assert.match(tokenHelper, /poller_user=plane-actions-poller/);
+  assert.match(tokenHelper, /\.local\/state\/plane-game-poller\/jenkins-api-token/);
   assert.match(tokenHelper, /"username":"%s","token":"%s"/);
   assert.match(tokenHelper, /sync -f "\$token_tmp"[\s\S]*mv -f -- "\$token_tmp" "\$token_file"/);
   assert.doesNotMatch(tokenHelper, /--user\s+[^\n]*:|export\s+[^\n]*(TOKEN|PASSWORD|SECRET)/i);

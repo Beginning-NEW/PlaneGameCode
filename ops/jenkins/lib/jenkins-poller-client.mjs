@@ -7,7 +7,7 @@ import {
   openSync,
   readFileSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 const JENKINS_ORIGIN = 'http://127.0.0.1:18080';
 const JOB_PATH = '/job/plane-game/job/main-cd';
@@ -17,11 +17,28 @@ function jenkinsError(code, message = code) {
   return Object.assign(new Error(message), { code });
 }
 
-function assertPrivateDirectory(path, uid) {
-  const metadata = lstatSync(path);
-  const permissionsInvalid = process.platform !== 'win32' &&
-    (metadata.uid !== uid || (metadata.mode & 0o777) !== 0o700);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink() || permissionsInvalid) throw jenkinsError('credential_unavailable');
+function assertSafeCredentialPath(path, uid) {
+  if (!isAbsolute(path) || resolve(path) !== path) throw jenkinsError('credential_unavailable');
+  let directory = dirname(path);
+  let immediateParent = true;
+  while (true) {
+    const metadata = lstatSync(directory);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw jenkinsError('credential_unavailable');
+    if (process.platform !== 'win32') {
+      if (immediateParent && (metadata.uid !== uid || (metadata.mode & 0o777) !== 0o700)) {
+        throw jenkinsError('credential_unavailable');
+      }
+      const rootOwnedSticky = metadata.uid === 0 && (metadata.mode & 0o1000) !== 0;
+      if (!immediateParent && ((metadata.uid !== uid && metadata.uid !== 0) ||
+          ((metadata.mode & 0o022) !== 0 && !rootOwnedSticky))) {
+        throw jenkinsError('credential_unavailable');
+      }
+    }
+    const ancestor = dirname(directory);
+    if (ancestor === directory) break;
+    directory = ancestor;
+    immediateParent = false;
+  }
 }
 
 export class JenkinsCredentialProvider {
@@ -34,7 +51,7 @@ export class JenkinsCredentialProvider {
     if (!Number.isInteger(this.uid)) throw jenkinsError('credential_unavailable');
     let fd;
     try {
-      assertPrivateDirectory(dirname(this.path), this.uid);
+      assertSafeCredentialPath(this.path, this.uid);
       fd = openSync(this.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const metadata = fstatSync(fd);
       const permissionsInvalid = process.platform !== 'win32' &&

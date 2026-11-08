@@ -90,7 +90,7 @@ pipeline {
                 returnStdout: true
               ).trim()
               env.GATEWAY_IMAGE = sh(
-                script: ". ops/jenkins/public-source-images.env; printf '%s' \"$GATEWAY_IMAGE\"",
+                script: '. ops/jenkins/public-source-images.env; printf \'%s\' "$GATEWAY_IMAGE"',
                 returnStdout: true
               ).trim()
             }

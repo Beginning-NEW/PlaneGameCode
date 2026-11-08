@@ -67,6 +67,7 @@
     "githubOrigins": ["https://api.github.com", "https://ghcr.io"],
     "jenkinsUrl": "http://127.0.0.1:18080",
     "principal": "plane-actions-poller",
+    "credentialFile": "~/.local/state/plane-game-poller/jenkins-api-token",
     "globalPermissions": ["Overall/Read"],
     "jobPermissions": ["Job/Read", "Job/Build"],
     "requestCeilingPerRollingHour": 30,

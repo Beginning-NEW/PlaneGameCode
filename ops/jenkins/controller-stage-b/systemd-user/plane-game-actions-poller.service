@@ -2,7 +2,7 @@
 Description=PlaneGame bounded public Actions poller (disabled package)
 After=network-online.target
 Wants=network-online.target
-ConditionPathIsRegular=%h/.config/plane-game/credentials/jenkins-poller-api-token
+ConditionPathIsRegular=%h/.local/state/plane-game-poller/jenkins-api-token
 ConditionPathIsRegular=%h/.local/state/plane-game-poller/journal.ndjson
 ConditionPathIsRegular=%h/.local/state/plane-game-poller/snapshot.json
 ConditionPathIsRegular=%h/.local/state/plane-game-poller/.shared.lock
@@ -15,7 +15,7 @@ RuntimeDirectoryMode=0700
 UMask=0077
 Environment=CD_TRIGGER_MODE=disabled
 Environment=PLANE_POLLER_STATE_DIR=%h/.local/state/plane-game-poller
-Environment=PLANE_POLLER_JENKINS_CREDENTIAL_FILE=%h/.config/plane-game/credentials/jenkins-poller-api-token
+Environment=PLANE_POLLER_JENKINS_CREDENTIAL_FILE=%h/.local/state/plane-game-poller/jenkins-api-token
 ExecStart=/usr/bin/flock --no-fork --nonblock %h/.local/state/plane-game-poller/.shared.lock /usr/bin/node %h/plane-game-cd/ops/jenkins/private-actions-poller.mjs
 NoNewPrivileges=true
 PrivateTmp=true

@@ -6,7 +6,7 @@ umask 077
 fail() { printf 'poller token creation refused: %s\n' "$*" >&2; exit 1; }
 
 [[ $# -le 1 ]] || fail 'usage: create-poller-token.sh [TOKEN_FILE]'
-token_file=${1:-"$HOME/.config/plane-game/credentials/jenkins-poller-api-token"}
+token_file=${1:-"$HOME/.local/state/plane-game-poller/jenkins-api-token"}
 jenkins_url=http://127.0.0.1:18080
 poller_user=plane-actions-poller
 admin_user=plane-admin

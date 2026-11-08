@@ -89,6 +89,8 @@ test('public registries use no login, a blank Docker config, re-resolution, and 
   assert.doesNotMatch(`${localDeploy}\n${pullHelper}`, /docker login|GHCR_(?:USER|TOKEN)|GH_API_TOKEN/);
   assert.match(promote, /expected_version=\$\(printf '\{"sha":"%s"\}' "\$sha"\)/);
   assert.match(localDeploy, /deploy\/promote[.]sh/);
+  assert.match(pipeline, /script: '\. ops\/jenkins\/public-source-images[.]env; printf \\'%s\\' "\$GATEWAY_IMAGE"'/);
+  assert.doesNotMatch(pipeline, /script: "[^"]*\$GATEWAY_IMAGE/);
   assert.doesNotMatch(`${pipeline}\n${verify}\n${gate}\n${localDeploy}\n${pullHelper}\n${docs}`, /ACR_|aliyuncs/i);
   assert.doesNotMatch(`${localDeploy}\n${pullHelper}`, /GITHUB_TOKEN/);
 });
@@ -125,6 +127,7 @@ test('Actions gives PR checks no CD secret path and main is the only image publi
   const publish = checks.split(/^  publish:$/m)[1] ?? '';
   assert.match(checks, /^permissions:\s+contents: read/m);
   assert.match(publish, /packages: write/);
+  assert.match(publish, /^    environment: production$/m);
   assert.match(
     publish,
     /actions\/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4[.]4[.]0/,
