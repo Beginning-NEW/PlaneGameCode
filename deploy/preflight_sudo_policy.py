@@ -20,6 +20,9 @@ EXPECTED_COMMAND = f'(root) NOPASSWD: {REPORT_PATH} ""'
 EXPECTED_USER = "plane-preflight"
 _HOST_RE = r"([A-Za-z0-9][A-Za-z0-9_.-]*)"
 _SAFE_BOOLEAN_DEFAULTS = frozenset({"env_reset", "mail_badpass", "use_pty"})
+EXPECTED_SECURE_PATH = (
+    r"secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin"
+)
 
 
 class PolicyError(RuntimeError):
@@ -55,26 +58,13 @@ def _validate_defaults(lines: list[str]) -> None:
         raise PolicyError("sudo Defaults section is empty or contains duplicates")
     if "env_reset" not in options:
         raise PolicyError("sudo Defaults do not preserve environment isolation")
-    if sum(option.startswith("secure_path=") for option in options) > 1:
-        raise PolicyError("sudo Defaults contain duplicate secure_path options")
+    if options.count(EXPECTED_SECURE_PATH) != 1:
+        raise PolicyError("sudo Defaults do not contain the one reviewed secure_path")
 
     for option in options:
-        if option in _SAFE_BOOLEAN_DEFAULTS:
+        if option in _SAFE_BOOLEAN_DEFAULTS or option == EXPECTED_SECURE_PATH:
             continue
-        if not option.startswith("secure_path="):
-            raise PolicyError("sudo Defaults contain an unreviewed effective option")
-        value = option.removeprefix("secure_path=").replace(r"\:", ":")
-        if chr(92) in value:
-            raise PolicyError("sudo secure_path contains unsupported escaping")
-        paths = value.split(":")
-        if not paths or any(
-            not path
-            or not PurePosixPath(path).is_absolute()
-            or str(PurePosixPath(path)) != path
-            or any(character.isspace() for character in path)
-            for path in paths
-        ):
-            raise PolicyError("sudo secure_path is not a canonical absolute path list")
+        raise PolicyError("sudo Defaults contain an unreviewed effective option")
 
 
 def parse_sudo_listing(stdout: bytes, stderr: bytes, *, user: str = EXPECTED_USER) -> None:

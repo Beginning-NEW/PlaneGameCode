@@ -24,7 +24,7 @@ def listing(
     defaults_header: str | None = None,
     defaults: tuple[str, ...] = (
         "env_reset, mail_badpass,",
-        "secure_path=/usr/local/sbin\\:/usr/local/bin\\:/usr/sbin\\:/usr/bin",
+        "secure_path=/usr/local/sbin\\:/usr/local/bin\\:/usr/sbin\\:/usr/bin\\:/sbin\\:/bin\\:/snap/bin",
     ),
 ) -> bytes:
     header = defaults_header or "Matching Defaults entries for plane-preflight on target-host:"
@@ -70,6 +70,7 @@ class SudoListingTests(unittest.TestCase):
             ("env_reset, unknown_safe_looking_option",),
             ("env_reset, env_reset",),
             ("env_reset, secure_path=/usr/bin, secure_path=/bin",),
+            ("env_reset, secure_path=/tmp",),
             (),
         ]
         for defaults in rejected:
@@ -84,12 +85,30 @@ class SudoListingTests(unittest.TestCase):
                 policy.EXPECTED_COMMAND,
                 defaults=(
                     "env_reset, mail_badpass,",
-                    "secure_path=/usr/local/sbin\\:/usr/local/bin\\:/usr/sbin\\:/usr/bin\\:/sbin\\:/bin,",
+                    "secure_path=/usr/local/sbin\\:/usr/local/bin\\:/usr/sbin\\:/usr/bin\\:/sbin\\:/bin\\:/snap/bin,",
                     "use_pty",
                 ),
             ),
             b"",
         )
+
+    def test_changed_or_missing_reviewed_secure_path_fails(self) -> None:
+        rejected = [
+            ("env_reset",),
+            ("env_reset, secure_path=",),
+            ("env_reset, secure_path=usr/bin",),
+            (
+                "env_reset, secure_path=/usr/local/bin\\:/usr/local/sbin\\:/usr/sbin\\:/usr/bin\\:/sbin\\:/bin\\:/snap/bin",
+            ),
+            (
+                "env_reset, secure_path=/usr/local/sbin\\:/usr/local/bin\\:/usr/sbin\\:/usr/bin\\:/sbin\\:/bin\\:/snap/bin\\:/tmp",
+            ),
+        ]
+        for defaults in rejected:
+            with self.subTest(defaults=defaults), self.assertRaises(policy.PolicyError):
+                policy.parse_sudo_listing(
+                    listing(policy.EXPECTED_COMMAND, defaults=defaults), b""
+                )
 
     def test_unexpected_locale_stderr_and_unparseable_output_fail(self) -> None:
         cases = [
@@ -178,6 +197,10 @@ class ProductionConstantsTests(unittest.TestCase):
     def test_absolute_sudo_and_exact_contract_are_fixed(self) -> None:
         self.assertEqual(policy.SUDO_BINARY, "/usr/bin/sudo")
         self.assertEqual(policy.REPORT_PATH, "/usr/local/sbin/plane-game-preflight-report")
+        self.assertEqual(
+            policy.EXPECTED_SECURE_PATH,
+            "secure_path=/usr/local/sbin\\:/usr/local/bin\\:/usr/sbin\\:/usr/bin\\:/sbin\\:/bin\\:/snap/bin",
+        )
         self.assertRegex(policy.REPORT_SHA256, r"^[0-9a-f]{64}$")
         self.assertNotEqual(policy.REPORT_SHA256, "0" * 64)
 

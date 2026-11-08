@@ -37,7 +37,7 @@ GitHub Actions 是 PR/main 重型 CI 和受保护 `main` 的唯一 GHCR 发布�
 - 既有 MSSQL/Postgres/Redis/new-api 的健康、延迟、CPU/IO 有回归；
 - rootless socket、回环端口、Aegis/替代安全基线或凭据边界不再成立。
 
-The fixed-report admission code runs under `/usr/bin/python3 -I`, ignores inherited Python search paths, and rejects any matching sudo Defaults outside the reviewed non-widening set (`env_reset`, `mail_badpass`, canonical `secure_path`, and optional `use_pty`). `setenv`, `!env_reset`, `env_keep`, unknown Defaults, and malformed output remain immediate No-Go conditions. This remains limited to the existing test-server preflight report contract and is not a general sudo allowance.
+The fixed-report admission code runs under `/usr/bin/python3 -I`, ignores inherited Python search paths, and rejects any matching sudo Defaults outside the reviewed non-widening set (`env_reset`, `mail_badpass`, the single independently observed target `secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin`, and optional `use_pty`). Any changed, reordered, missing, or additional path entry, plus `setenv`, `!env_reset`, `env_keep`, unknown Defaults, and malformed output, remains an immediate No-Go condition. This remains limited to the existing test-server preflight report contract and is not a general sudo allowance.
 
 ## Jenkins public-source identity and permissions
 
