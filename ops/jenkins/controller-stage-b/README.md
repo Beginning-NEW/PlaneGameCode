@@ -98,6 +98,12 @@ bash ops/jenkins/controller-stage-b/manage-gateway-token.sh revoke
 
 `create` prompts twice, without echo, for the known `plane-admin` password corresponding to the bcrypt bootstrap. The host-only token file is one mode-`0600` JSON document containing version, token, and UUID. Every helper operation holds a private file lock; `rotate` publishes the complete new document with one fsynced atomic rename, then revokes prior tokens. If revocation is interrupted, `prune` uses the published UUID to complete it; a consumer reads only a complete old or new generation. `revoke` revokes all gateway tokens and atomically empties the existing target. The separate host-only `webhook-secret` HMAC file is untouched and is not required for a no-webhook controller rehearsal. The gateway remains disabled and loopback-only.
 
+## Separately approved persistent poller activation
+
+The packaged poller service remains disabled by default. The timer has an install target so a later approved Operations action can persist it under `timers.target`; the reviewed poller-mode override lives separately under `systemd-user-activation/` and is installed only by `manage-actions-poller.sh activate`. That helper also requires user linger, mutual exclusion with the webhook service, the canonical checkout, and the complete owner-only poller state before it enables the timer.
+
+Before any GO, Operations must use the helper's `prepare-restart` action, restart the target host, wait for the five-minute timer, and run `verify-restart`. Verification requires a changed kernel boot ID plus a still-enabled/active timer and a successful poller invocation in the new boot. A one-shot `systemctl start` or environment override is not accepted. See `../PRIVATE-POLLER.md` for the exact sequence. This repository change does not run that sequence or enable a runtime.
+
 ## Offline verification
 
 From the repository root:

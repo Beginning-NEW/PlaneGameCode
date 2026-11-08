@@ -43,6 +43,7 @@ const scriptNames = [
   'build-image.sh',
   'generate-admin-bootstrap.sh',
   'run-controller.sh',
+  'manage-actions-poller.sh',
   'disable-stage-b.sh',
   'backup-home.sh',
   'restore-home.sh',

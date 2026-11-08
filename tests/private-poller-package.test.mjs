@@ -6,12 +6,13 @@ import test from 'node:test';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const profile = new URL('../ops/jenkins/controller-stage-b/', import.meta.url);
-const [manifestText, job, casc, service, timer, webhookService, docs, tokenHelper, pipeline, localDeploy, promote] = await Promise.all([
+const [manifestText, job, casc, service, timer, activationDropin, webhookService, docs, tokenHelper, pipeline, localDeploy, promote] = await Promise.all([
   readFile(new URL('runtime-manifest.json', profile), 'utf8'),
   readFile(new URL('plane-game-job.groovy', profile), 'utf8'),
   readFile(new URL('casc.yaml', profile), 'utf8'),
   readFile(new URL('systemd-user/plane-game-actions-poller.service', profile), 'utf8'),
   readFile(new URL('systemd-user/plane-game-actions-poller.timer', profile), 'utf8'),
+  readFile(new URL('systemd-user-activation/plane-game-actions-poller.service.d/10-trigger-mode.conf', profile), 'utf8'),
   readFile(new URL('systemd-user/plane-game-webhook-gateway.service', profile), 'utf8'),
   readFile(new URL('../ops/jenkins/PRIVATE-POLLER.md', import.meta.url), 'utf8'),
   readFile(new URL('create-poller-token.sh', profile), 'utf8'),
@@ -37,7 +38,9 @@ test('poller package is disabled, five-minute bounded, and mutually exclusive wi
   assert.match(webhookService, /Environment=CD_TRIGGER_MODE=disabled/);
   assert.match(service, /PLANE_POLLER_JENKINS_CREDENTIAL_FILE=%h\/.local\/state\/plane-game-poller\/jenkins-api-token/);
   assert.match(timer, /OnBootSec=5min[\s\S]*OnUnitActiveSec=5min/);
-  assert.doesNotMatch(`${service}\n${timer}`, /^\[Install\]|^WantedBy=/m);
+  assert.doesNotMatch(service, /^\[Install\]|^WantedBy=/m);
+  assert.match(timer, /^\[Install\]\nWantedBy=timers[.]target$/m);
+  assert.match(activationDropin, /Environment=CD_TRIGGER_MODE=poller/);
   assert.match(service, /flock --no-fork --nonblock %h\/.local\/state\/plane-game-poller\/\.shared\.lock/);
   assert.match(pipeline, /flock --no-fork --nonblock "\$PLANE_POLLER_STATE_DIR\/\.shared\.lock"/);
   assert.match(localDeploy, /state_call\(\)[\s\S]*flock --no-fork --nonblock "\$state_lock"/);

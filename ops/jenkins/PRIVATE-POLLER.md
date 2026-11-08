@@ -1,6 +1,6 @@
 # Private Actions poller package
 
-This package is configuration-only delivery evidence. It does not enable the Jenkins job, the poller timer, the webhook gateway, or a deployment. `CD_TRIGGER_MODE` is committed as `disabled`; the job and both user-service paths refuse a disabled, missing, unknown, or mismatched selector. Controlled enablement remains a separate Operations action.
+This package is configuration-only delivery evidence. It does not enable the Jenkins job, the poller timer, the webhook gateway, or a deployment. `CD_TRIGGER_MODE` remains committed as `disabled` in the service and Jenkins defaults; both user-service paths refuse a disabled, missing, unknown, or mismatched selector. Controlled enablement remains a separate Operations action.
 
 ## Fixed trust and request graph
 
@@ -47,5 +47,25 @@ install -m 0600 /dev/null "$HOME/.local/state/plane-game-poller/jenkins-api-toke
 ```
 
 `create-poller-token.sh` writes only to an already-created empty owner-only target and uses the interactive admin bootstrap solely for token creation. Do not run it as part of this implementation review. Rotation/revocation and mode enablement require a separately reviewed Operations procedure.
+
+## Persistent poller activation gate
+
+The timer now has an explicit `WantedBy=timers.target` install target, but the repository and installed service still default to `CD_TRIGGER_MODE=disabled`. The opt-in drop-in under `controller-stage-b/systemd-user-activation/` is deliberately outside the default unit directory. Merely starting the timer or supplying a one-shot environment value is not an activation procedure.
+
+After Security, Functional, Operations, and CTO approval, the `plane-preflight` operator may run the bounded activation helper from the canonical `$HOME/plane-game-cd` checkout:
+
+The helper activates only the rootless host poller schedule. It does not enable `plane-game/main-cd` or change Jenkins' committed global selector; the separately reviewed enablement procedure must set that job/global selector to the same exclusive `poller` mode before end-to-end GO.
+
+```sh
+bash ops/jenkins/controller-stage-b/manage-actions-poller.sh activate
+bash ops/jenkins/controller-stage-b/manage-actions-poller.sh prepare-restart
+# Reboot the rehearsal host through the separately approved Operations procedure.
+# Wait at least five minutes after the user manager starts.
+bash ops/jenkins/controller-stage-b/manage-actions-poller.sh verify-restart
+```
+
+`activate` refuses the wrong UID/user, a non-canonical checkout, unsafe or incomplete ledger/credential files, disabled user linger, an active or unverifiable webhook service, symlinked or group/world-writable systemd configuration paths, unsafe activation sources, or an ineffective mode override. It atomically installs the disabled service, the timer, and the reviewed `CD_TRIGGER_MODE=poller` drop-in before running `systemctl --user enable --now plane-game-actions-poller.timer`. The timer must report exactly `enabled` (not `enabled-runtime` or `static`) and `active`.
+
+`prepare-restart` durably records the kernel boot ID in the owner-only poller state directory. `verify-restart` fails until the boot ID changes, user linger remains enabled, the timer is still persistently enabled and active, the poller drop-in is effective, the timer has fired during the new boot, and the resulting oneshot service reports `Result=success` with exit status 0. It then writes the before/after boot IDs and non-secret systemd result fields to `activation-restart-proof`. Operations must retain that file's metadata/content as restart evidence. No implementation or CI run substitutes for this target-host proof, and no GO may be issued without it.
 
 The self-owned ledger detects accidental corruption and other-UID/path attacks. Malicious replay of an earlier internally consistent journal/snapshot by the same service UID remains explicitly out of scope; preventing it requires a separately trusted root-owned or remote monotonic anchor.
