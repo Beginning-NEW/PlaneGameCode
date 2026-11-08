@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { chmodSync, chownSync, linkSync, mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, chownSync, linkSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,9 +14,11 @@ const secret = Buffer.from('test-only-webhook-secret');
 
 test('HMAC secret consumer rejects unsafe metadata and reads atomic rotations', { skip: process.platform === 'win32' }, () => {
   const directory = mkdtempSync(join(tmpdir(), 'plane-hmac-secret-'));
-  const path = join(directory, 'webhook-secret');
-  const linked = join(directory, 'linked-secret');
-  const hardlink = join(directory, 'hardlink-secret');
+  const credentials = join(directory, 'credentials');
+  mkdirSync(credentials, { mode: 0o700 });
+  const path = join(credentials, 'webhook-secret');
+  const linked = join(credentials, 'linked-secret');
+  const hardlink = join(credentials, 'hardlink-secret');
   const provider = new FileSecretProvider(path);
   const rejected = (candidate = path) => assert.throws(
     () => new FileSecretProvider(candidate).get(),
@@ -43,9 +45,17 @@ test('HMAC secret consumer rejects unsafe metadata and reads atomic rotations', 
     rejected();
 
     writeFileSync(path, secret);
-    chmodSync(directory, 0o755);
+    chmodSync(credentials, 0o755);
+    rejected();
+    chmodSync(credentials, 0o700);
+
+    chmodSync(directory, 0o777);
     rejected();
     chmodSync(directory, 0o700);
+
+    const alias = join(directory, 'alias');
+    symlinkSync(credentials, alias);
+    rejected(join(alias, 'webhook-secret'));
 
     if (process.getuid() === 0) {
       chownSync(path, 65534, 65534);
