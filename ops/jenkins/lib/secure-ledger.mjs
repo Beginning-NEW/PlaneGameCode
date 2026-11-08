@@ -72,7 +72,12 @@ function assertRegular(metadata, uid) {
 }
 
 function openRegular(path, flags, uid) {
-  const fd = openSync(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  let fd;
+  try {
+    fd = openSync(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  } catch {
+    throw ledgerError('ledger_file_unsafe');
+  }
   try {
     assertRegular(fstatSync(fd), uid);
     return fd;
