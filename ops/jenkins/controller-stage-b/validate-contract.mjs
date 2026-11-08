@@ -46,6 +46,7 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(casc, /numExecutors: 1/, 'agent must have one executor');
   requireMatch(casc, /mode: EXCLUSIVE/, 'agent must be matching-label-only');
   requireMatch(casc, /scope: SYSTEM/, 'agent credential must be SYSTEM scoped');
+  requireMatch(casc, /privateKeySource:\s*directEntry:/, 'JCasC SSH private-key source must use directEntry');
   requireMatch(casc, /manuallyProvidedKeyVerificationStrategy:/, 'fixed host-key verifier missing');
   requireMatch(casc, /PLANE_AGENT_ED25519_HOST_KEY/, 'Ed25519 host-key file reference missing');
   for (const source of [
