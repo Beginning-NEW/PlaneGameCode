@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { dirname } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 const DELIVERY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
@@ -55,9 +55,43 @@ export class FileSecretProvider {
   }
 
   get() {
-    const secret = readFileSync(this.path);
-    if (secret.length === 0) throw Object.assign(new Error('empty secret'), { code: 'secret_unavailable' });
-    return secret;
+    try {
+      const uid = process.getuid();
+      if (!isAbsolute(this.path) || resolve(this.path) !== this.path) throw new Error('invalid secret path');
+      let directory = dirname(this.path);
+      let immediateParent = true;
+      while (true) {
+        const metadata = lstatSync(directory);
+        if (!metadata.isDirectory()) throw new Error('invalid secret directory');
+        if (immediateParent && (metadata.uid !== uid || (metadata.mode & 0o777) !== 0o700)) {
+          throw new Error('invalid secret directory');
+        }
+        const rootOwnedSticky = metadata.uid === 0 && (metadata.mode & 0o1000) !== 0;
+        if (!immediateParent && ((metadata.uid !== uid && metadata.uid !== 0) ||
+            ((metadata.mode & 0o022) !== 0 && !rootOwnedSticky))) {
+          throw new Error('invalid secret directory');
+        }
+        const ancestor = dirname(directory);
+        if (ancestor === directory) break;
+        directory = ancestor;
+        immediateParent = false;
+      }
+      const fd = openSync(this.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const file = fstatSync(fd);
+        if (!file.isFile() || file.nlink !== 1 || file.uid !== uid ||
+            (file.mode & 0o777) !== 0o600 || file.size === 0 || file.size > 4096) {
+          throw new Error('invalid secret file');
+        }
+        const secret = readFileSync(fd);
+        if (secret.length !== file.size) throw new Error('secret changed during read');
+        return secret;
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      throw Object.assign(new Error('secret unavailable'), { code: 'secret_unavailable' });
+    }
   }
 }
 

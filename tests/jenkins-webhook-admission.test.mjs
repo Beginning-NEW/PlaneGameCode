@@ -1,15 +1,76 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import { chmodSync, chownSync, linkSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
-import { DeliveryStore, WebhookAdmission } from '../ops/jenkins/webhook-admission.mjs';
+import { DeliveryStore, FileSecretProvider, WebhookAdmission } from '../ops/jenkins/webhook-admission.mjs';
 
 const delivery = '123e4567-e89b-42d3-a456-426614174000';
 const secondDelivery = '223e4567-e89b-42d3-a456-426614174000';
 const secret = Buffer.from('test-only-webhook-secret');
+
+test('HMAC secret consumer rejects unsafe metadata and reads atomic rotations', { skip: process.platform === 'win32' }, () => {
+  const directory = mkdtempSync(join(tmpdir(), 'plane-hmac-secret-'));
+  const credentials = join(directory, 'credentials');
+  mkdirSync(credentials, { mode: 0o700 });
+  const path = join(credentials, 'webhook-secret');
+  const linked = join(credentials, 'linked-secret');
+  const hardlink = join(credentials, 'hardlink-secret');
+  const provider = new FileSecretProvider(path);
+  const rejected = (candidate = path) => assert.throws(
+    () => new FileSecretProvider(candidate).get(),
+    (error) => error.code === 'secret_unavailable',
+  );
+  try {
+    writeFileSync(path, secret, { mode: 0o600 });
+    assert.deepEqual(provider.get(), secret);
+
+    chmodSync(path, 0o644);
+    rejected();
+    chmodSync(path, 0o600);
+
+    symlinkSync(path, linked);
+    rejected(linked);
+
+    linkSync(path, hardlink);
+    rejected();
+    unlinkSync(hardlink);
+
+    writeFileSync(path, Buffer.alloc(0));
+    rejected();
+    writeFileSync(path, Buffer.alloc(4097, 65));
+    rejected();
+
+    writeFileSync(path, secret);
+    chmodSync(credentials, 0o755);
+    rejected();
+    chmodSync(credentials, 0o700);
+
+    chmodSync(directory, 0o777);
+    rejected();
+    chmodSync(directory, 0o700);
+
+    const alias = join(directory, 'alias');
+    symlinkSync(credentials, alias);
+    rejected(join(alias, 'webhook-secret'));
+
+    if (process.getuid() === 0) {
+      chownSync(path, 65534, 65534);
+      rejected();
+      chownSync(path, process.getuid(), process.getgid());
+    }
+
+    const rotated = Buffer.from('test-only-rotated-webhook-secret');
+    writeFileSync(`${path}.next`, rotated, { mode: 0o600 });
+    renameSync(`${path}.next`, path);
+    assert.deepEqual(provider.get(), rotated);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 const trusted = {
   action: 'completed',
   repository: { full_name: 'Beginning-NEW/PlaneGameCode' },
@@ -72,6 +133,19 @@ async function fixture(t, options = {}) {
   });
   return { admission, directory, store, enqueuer, logs };
 }
+
+test('unsafe HMAC file fails admission before queue or credential use', { skip: process.platform === 'win32' }, async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'plane-unsafe-hmac-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'webhook-secret');
+  writeFileSync(path, secret, { mode: 0o644 });
+  const { admission, enqueuer, logs } = await fixture(t, {
+    webhookSecretProvider: new FileSecretProvider(path),
+  });
+  assert.deepEqual(await admission.handle(request()), { status: 503, body: { code: 'signature_unavailable' } });
+  assert.deepEqual(enqueuer.calls, { enqueue: 0, reconcile: 0 });
+  assert.equal(JSON.stringify(logs).includes(secret.toString()), false);
+});
 
 test('HMAC is verified before delivery validation and every rejection has zero queue side effects', async (t) => {
   const { admission, enqueuer, logs } = await fixture(t);
