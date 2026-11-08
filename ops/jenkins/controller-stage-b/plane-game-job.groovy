@@ -24,7 +24,6 @@ pipelineJob('plane-game/main-cd') {
         git {
           remote {
             url('https://github.com/Beginning-NEW/PlaneGameCode.git')
-            credentials('plane-github-scm-read')
           }
           branch('*/main')
           extensions { cloneOptions { noTags(true); shallow(false) } }

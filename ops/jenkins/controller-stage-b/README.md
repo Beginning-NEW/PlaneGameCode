@@ -46,9 +46,9 @@ chmod 0600 "$approved_dir/admin-bootstrap-bcrypt"
 
 The password prompts are interactive and hidden. On the first healthy boot, remove `admin-bootstrap-bcrypt` from the approved directory before any restart. A retained identical file makes the next start fail; this proves the file is one-time. For later starts, run the bounded `disable-stage-b.sh` path and then `run-controller.sh`; the runner removes only the stopped, correctly labelled controller and recreates its read-only mounts while retaining the named home volume. A restart without the bootstrap file succeeds from the persisted user record. To rotate, disable the controller, write a different `#jbcrypt` value to the same protected file, start once, wait for healthy status, then remove it. Reusing the previously applied hash is rejected.
 
-`init.groovy` clears the readiness marker first and recreates it only after SYSTEM has verified the admin ACL, the gateway ACL, exact credential types/scopes, the disabled job, zero controller executors, the disabled inbound port, and the bounded SSH agent. `healthcheck.sh` requires that authorization/bootstrap proof as well as login `200` and anonymous API `403`; those HTTP codes alone cannot make the controller healthy.
+`init.groovy` clears the readiness marker first and recreates it only after SYSTEM has verified the admin ACL, the gateway ACL, the SYSTEM SSH credential, the public-source no-credential job, zero controller executors, the disabled inbound port, and the bounded SSH agent. `healthcheck.sh` requires that authorization/bootstrap proof as well as login `200` and anonymous API `403`; those HTTP codes alone cannot make the controller healthy.
 
-## SSH Build Agent and credentials
+## SSH Build Agent and public-source CD
 
 JCasC declares one exclusive `plane-game-cd-rootless` SSH agent with one executor and remote root `/home/plane-preflight/jenkins-agent`. The launcher uses a manually provided Ed25519 host key, never trust-on-first-use or a non-verifying strategy.
 
@@ -56,10 +56,9 @@ No credential value is committed. JCasC strict secret resolution is enabled; eve
 
 - `agent-host`;
 - `agent-host-key`, containing one fixed `ssh-ed25519` public host key;
-- `agent-private-key` for SYSTEM-scope `plane-game-agent-ssh`;
-- `github-scm-username` and `github-scm-password` for GLOBAL `plane-github-scm-read` (repository Contents-read checkout only);
-- `github-actions-token` for GLOBAL `plane-github-actions-read` (Actions-read plus Contents-read verification only);
-- `ghcr-username` and `ghcr-token` for GLOBAL `plane-ghcr-pull` (`read:packages` only).
+- `agent-private-key` for SYSTEM-scope `plane-game-agent-ssh`.
+
+The public repository is checked out by exact anonymous HTTPS URL with no credential ID. Actions proof uses the unauthenticated exact-attempt and main-ref APIs. GHCR and Docker Hub pulls use an empty temporary Docker config, no login, and digest-only image references; no GitHub or registry credential object or host file is permitted.
 
 The approved directory must be owned by UID 1003 with mode `0700` or `0750`. Each file must be a regular non-symlink owned by UID 1003 with mode `0400`, `0440`, `0600`, or `0640`. `run-controller.sh` does not change permissions: it launches the exact image user with the exact read-only mounts under `--network none` and refuses to start unless that user can read every file. Provision a narrow host ACL for the rootless user-namespace mapping when needed; never fall back to world-readable modes. Do not reuse or create `PLANE_GAME_GITHUB_TOKEN`. See `credential-manifest.json` for metadata only.
 

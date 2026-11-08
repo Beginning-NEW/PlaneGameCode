@@ -49,10 +49,9 @@ test('webhook admission validates HMAC and persists atomic delivery and run uniq
     '/usr/bin/flock --no-fork --nonblock',
     'ProtectSystem=strict',
   ]) assert.ok(service.includes(value), `missing service control: ${value}`);
-  for (const value of [
-    "stringParam('WEBHOOK_DELIVERY'",
-    'disabled(true)',
-  ]) assert.ok(jobDsl.includes(value), `missing webhook contract value: ${value}`);
+  for (const value of ["stringParam('WEBHOOK_DELIVERY'", 'disabled(true)']) {
+    assert.ok(jobDsl.includes(value), `missing webhook contract value: ${value}`);
+  }
   assert.doesNotMatch(jobDsl, /genericTrigger|triggers\s*\{/);
   assert.ok(pipeline.includes('params.WEBHOOK_DELIVERY ==~ /(?i)[0-9a-f]{8}'));
 });
@@ -64,20 +63,18 @@ test('offline webhook dry-run queues once and rejects without logging secrets', 
   assert.match(result.stdout, /queued=1 duplicate=1 rejected=2 hmac=verified payload_logged=0 secret_logged=0/);
 });
 
-test('ordering and credential documentation preserve the reviewed safety boundary', () => {
+test('ordering and public-source documentation preserve the reviewed safety boundary', () => {
   assert.match(verify, /api_run_number/);
-  assert.match(verify, /[.]run_number \| tostring.*\$run_number/);
+  assert.match(verify, /actions\/runs\/\$run_id\/attempts\/\$run_attempt/);
+  assert.doesNotMatch(verify, /Authorization:|GH_API_TOKEN|artifacts\//);
   assert.match(pipeline, /ACTIONS_RUN_NUMBER.*ACTIONS_RUN_ATTEMPT/s);
   for (const value of [
-    'PAT (classic)',
-    'read:packages',
-    'write:packages',
-    'delete:packages',
-    'SSO authorization',
-    'expiry',
-    'rotation',
-    'revocation',
-    'GITHUB_TOKEN',
+    'anonymous HTTPS',
+    'exact-attempt',
+    'empty temporary Docker config',
+    'no login',
+    'canonical sha256 digest',
+    'rate-limit exhaustion',
     '[YOU-47](/YOU/issues/YOU-47)',
     'cannot replace that admission gate',
     'delivery_id',
@@ -86,8 +83,5 @@ test('ordering and credential documentation preserve the reviewed safety boundar
     'queued',
     'failed',
   ]) assert.ok(docs.includes(value), `missing RUNBOOK boundary: ${value}`);
-  assert.match(docs, /单调递增的 Actions `run_number`/);
-  assert.match(docs, /`run_id` 只用于唯一标识 run/);
-  assert.match(docs, /专用机器账号用户名 \+ 可轮换 PAT \(classic\)/);
-  assert.doesNotMatch(docs, /Actions run id 单调|较旧 Actions run id|专用机器人用户名 \+ 可轮换 token/);
+  assert.doesNotMatch(docs, /plane-(?:github-(?:scm|actions)-read|ghcr-pull)/);
 });

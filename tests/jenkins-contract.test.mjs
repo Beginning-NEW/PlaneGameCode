@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [pipeline, verify, gate, localDeploy, promote, docs, checks, jobDsl] = await Promise.all([
+const [pipeline, verify, resolveDigest, publicImages, gate, localDeploy, promote, docs, checks,
+  jobDsl] = await Promise.all([
   readFile(new URL('../Jenkinsfile', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/verify-candidate.sh', import.meta.url), 'utf8'),
+  readFile(new URL('../ops/jenkins/resolve-public-ghcr-digest.sh', import.meta.url), 'utf8'),
+  readFile(new URL('../ops/jenkins/public-source-images.env', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/resource-gate.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/deploy-local.sh', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/promote.sh', import.meta.url), 'utf8'),
@@ -46,7 +49,7 @@ test('missing or tampered job identity and deployment port fail the static contr
   }
 });
 
-test('webhook metadata is verified against a successful trusted Actions main run and artifact', () => {
+test('webhook metadata is verified through the anonymous exact-attempt and main-ref APIs', () => {
   for (const field of [
     '.name == "Checks"',
     '.path == ".github/workflows/checks.yml"',
@@ -59,21 +62,29 @@ test('webhook metadata is verified against a successful trusted Actions main run
   ]) {
     assert.ok(verify.includes(field), `missing trusted-run assertion: ${field}`);
   }
-  assert.match(verify, /release-candidate-\$sha/);
-  assert.match(verify, /Expected exactly one unexpired release candidate artifact/);
+  assert.match(verify, /actions\/runs\/\$run_id\/attempts\/\$run_attempt/);
   assert.match(verify, /git\/ref\/heads\/main/);
   assert.match(verify, /Protected main moved; stale candidate rejected/);
-  assert.match(verify, /image_digest.*sha256/s);
+  assert.match(verify, /resolve-public-ghcr-digest[.]sh/);
+  assert.doesNotMatch(verify, /Authorization:|artifacts\/|GH_API_TOKEN/);
 });
 
-test('GHCR pull uses a distinct sustainable read credential and temporary Docker config', () => {
-  assert.match(pipeline, /plane-github-actions-read/);
-  assert.match(pipeline, /plane-ghcr-pull/);
-  assert.match(localDeploy, /GHCR_USER/);
-  assert.match(localDeploy, /GHCR_TOKEN/);
-  assert.match(localDeploy, /mktemp -d .*docker-auth/);
+test('public registries use no login, a blank Docker config, re-resolution, and digest-only pulls', () => {
+  assert.doesNotMatch(pipeline, /withCredentials|credentialsId/);
+  assert.match(resolveDigest, /ghcr[.]io\/token[?]scope=/);
+  assert.match(resolveDigest, /docker-content-digest/);
+  assert.match(resolveDigest, /--retry 0.*--connect-timeout 10.*--max-time 30/s);
+  assert.match(resolveDigest, /rate limit is exhausted/);
+  assert.match(publicImages, /^NGINX_BASE_IMAGE=.*@sha256:[0-9a-f]{64}$/m);
+  assert.match(publicImages, /^GATEWAY_IMAGE=.*@sha256:[0-9a-f]{64}$/m);
+  assert.match(localDeploy, /mktemp -d .*docker-public/);
+  assert.match(localDeploy, /printf '\{\}\\n' > "\$DOCKER_CONFIG\/config[.]json"/);
+  assert.match(localDeploy, /unset DOCKER_AUTH_CONFIG REGISTRY_AUTH_FILE/);
+  assert.match(localDeploy, /resolve-public-ghcr-digest[.]sh/);
   assert.match(localDeploy, /trap cleanup EXIT/);
   assert.match(localDeploy, /docker pull "\$repository@\$digest"/);
+  assert.match(localDeploy, /docker pull "\$gateway_image"/);
+  assert.doesNotMatch(localDeploy, /docker login|GHCR_(?:USER|TOKEN)|GH_API_TOKEN/);
   assert.match(promote, /expected_version=\$\(printf '\{"sha":"%s"\}' "\$sha"\)/);
   assert.match(localDeploy, /deploy\/promote[.]sh/);
   assert.doesNotMatch(`${pipeline}\n${verify}\n${gate}\n${localDeploy}\n${docs}`, /ACR_|aliyuncs/i);
@@ -120,8 +131,8 @@ test('Actions gives PR checks no CD secret path and main is the only image publi
     assert.match(action[1], /^[^@]+@[0-9a-f]{40}$/);
   }
   assert.doesNotMatch(checks, /DEPLOY_SSH|DEPLOY_HOST|GHCR_READ_TOKEN/);
-  assert.match(docs, /plane-github-scm-read/);
-  assert.match(docs, /plane-github-actions-read/);
-  assert.match(docs, /plane-ghcr-pull/);
+  assert.match(docs, /anonymous HTTPS/i);
+  assert.match(docs, /exact-attempt/i);
+  assert.doesNotMatch(docs, /plane-(?:github-(?:scm|actions)-read|ghcr-pull)/);
   assert.match(docs, /plane-github-webhook-secret/);
 });

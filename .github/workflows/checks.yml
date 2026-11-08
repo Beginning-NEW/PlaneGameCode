@@ -77,12 +77,13 @@ jobs:
         env:
           GHCR_TOKEN: ${{ github.token }}
           NODE_BASE_IMAGE: ${{ vars.NODE_BASE_IMAGE }}
-          NGINX_BASE_IMAGE: ${{ vars.NGINX_BASE_IMAGE }}
         run: |
           set -euo pipefail
+          source ops/jenkins/public-source-images.env
           image_repository="ghcr.io/${GITHUB_REPOSITORY,,}"
           [[ "$NODE_BASE_IMAGE" =~ ^node:24-alpine@sha256:[0-9a-f]{64}$ ]]
           [[ "$NGINX_BASE_IMAGE" =~ ^nginxinc/nginx-unprivileged:1[.]29-alpine@sha256:[0-9a-f]{64}$ ]]
+          [[ "$GATEWAY_IMAGE" == "nginxinc/nginx-unprivileged@${NGINX_BASE_IMAGE##*@}" ]]
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker build --platform linux/amd64 \
             --build-arg "NODE_BASE_IMAGE=$NODE_BASE_IMAGE" \
@@ -105,7 +106,7 @@ jobs:
           docker push "$image_repository:$GITHUB_SHA"
           image_digest=$(docker buildx imagetools inspect "$image_repository:$GITHUB_SHA" --format '{{.Manifest.Digest}}')
           [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          gateway_image="${NGINX_BASE_IMAGE/:1.29-alpine@/@}"
+          gateway_image="$GATEWAY_IMAGE"
           [[ "$gateway_image" =~ ^nginxinc/nginx-unprivileged@sha256:[0-9a-f]{64}$ ]]
           echo "repository=$image_repository" >> "$GITHUB_OUTPUT"
           echo "digest=$image_digest" >> "$GITHUB_OUTPUT"

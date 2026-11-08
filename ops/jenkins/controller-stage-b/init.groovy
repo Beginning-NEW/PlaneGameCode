@@ -2,7 +2,6 @@ import com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey
 import com.cloudbees.plugins.credentials.CredentialsScope
 import com.cloudbees.plugins.credentials.CredentialsProvider
 import com.cloudbees.plugins.credentials.SystemCredentialsProvider
-import com.cloudbees.plugins.credentials.common.StandardUsernamePasswordCredentials
 import hudson.model.Item
 import hudson.model.Node
 import hudson.model.User
@@ -18,7 +17,6 @@ import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.security.SecureRandom
 import jenkins.model.Jenkins
-import org.jenkinsci.plugins.plaincredentials.StringCredentials
 
 def fail = { String message ->
   System.err.println("Stage B invariant failed: ${message}")
@@ -94,17 +92,10 @@ def requireCredential = { String id, Class type, CredentialsScope scope ->
   return matches[0]
 }
 
-def scm = (StandardUsernamePasswordCredentials) requireCredential(
-  'plane-github-scm-read', StandardUsernamePasswordCredentials.class, CredentialsScope.GLOBAL)
-def actions = (StringCredentials) requireCredential(
-  'plane-github-actions-read', StringCredentials.class, CredentialsScope.GLOBAL)
-def ghcr = (StandardUsernamePasswordCredentials) requireCredential(
-  'plane-ghcr-pull', StandardUsernamePasswordCredentials.class, CredentialsScope.GLOBAL)
 def ssh = (BasicSSHUserPrivateKey) requireCredential(
   'plane-game-agent-ssh', BasicSSHUserPrivateKey.class, CredentialsScope.SYSTEM)
-if (!scm.username || !scm.password?.plainText || !actions.secret?.plainText ||
-    !ghcr.username || !ghcr.password?.plainText || !ssh.privateKey) {
-  fail('one or more required credential values resolved empty')
+if (!ssh.privateKey) {
+  fail('required SSH credential value resolved empty')
 }
 
 def agent = controller.getNode('plane-game-cd-rootless')
@@ -149,4 +140,4 @@ def readyTemp = home.resolve('.stage-b-ready.tmp')
 Files.writeString(readyTemp, 'stage-b-ready-v2\n', StandardCharsets.US_ASCII,
   StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
 Files.move(readyTemp, readyFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-println('Stage B invariant passed: bootstrap, authorization, credentials, controller, agent, and disabled job are ready')
+println('Stage B invariant passed: bootstrap, authorization, SSH credential, controller, agent, and disabled job are ready')

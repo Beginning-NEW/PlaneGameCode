@@ -42,21 +42,11 @@ secret_names=(
   agent-host
   agent-host-key
   agent-private-key
-  github-scm-username
-  github-scm-password
-  github-actions-token
-  ghcr-username
-  ghcr-token
 )
 secret_destinations=(
   /run/secrets/PLANE_AGENT_HOST
   /run/secrets/PLANE_AGENT_ED25519_HOST_KEY
   /run/secrets/PLANE_AGENT_PRIVATE_KEY
-  /run/secrets/PLANE_GITHUB_SCM_USERNAME
-  /run/secrets/PLANE_GITHUB_SCM_PASSWORD
-  /run/secrets/PLANE_GITHUB_ACTIONS_TOKEN
-  /run/secrets/PLANE_GHCR_USERNAME
-  /run/secrets/PLANE_GHCR_TOKEN
 )
 mount_args=()
 for index in "${!secret_names[@]}"; do
@@ -66,7 +56,7 @@ for index in "${!secret_names[@]}"; do
   validate_secret_file "$source_path" "$name"
   mount_args+=(--mount "type=bind,src=$source_path,dst=$destination,readonly")
 done
-for single_line_name in agent-host agent-host-key github-scm-username github-scm-password github-actions-token ghcr-username ghcr-token; do
+for single_line_name in agent-host agent-host-key; do
   validate_single_line "$approved_dir/$single_line_name" "$single_line_name"
 done
 
@@ -82,12 +72,6 @@ fi
 
 grep -Eq '^ssh-ed25519 [A-Za-z0-9+/]+={0,3}( [^[:space:]]+)?$' "$approved_dir/agent-host-key" ||
   fail 'approved host key must be fixed Ed25519'
-for username_file in github-scm-username ghcr-username; do
-  [[ "$(wc -l <"$approved_dir/$username_file")" -le 1 ]] || fail "username must be one line: $username_file"
-  grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' "$approved_dir/$username_file" ||
-    fail "username format is invalid: $username_file"
-done
-
 image_id=$(tr -d '\r\n' <"$image_id_file")
 [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'image ID must be immutable sha256'
 

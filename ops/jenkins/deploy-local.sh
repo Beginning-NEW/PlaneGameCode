@@ -20,8 +20,6 @@ post_cd_resource_gate=$9
 [[ "$run_attempt" =~ ^[1-9][0-9]*$ && ${#run_attempt} -le 10 ]] || exit 1
 [[ "$gateway_image" =~ ^nginxinc/nginx-unprivileged@sha256:[0-9a-f]{64}$ ]] || exit 1
 [[ "$post_cd_resource_gate" == ops/jenkins/resource-gate.sh ]] || { echo 'Unexpected post-CD resource gate' >&2; exit 1; }
-[[ -n "${GHCR_USER:-}" && -n "${GHCR_TOKEN:-}" ]] || { echo 'Sustainable GHCR pull credential is required' >&2; exit 1; }
-[[ -n "${GH_API_TOKEN:-}" ]] || { echo 'GitHub Actions read credential is required' >&2; exit 1; }
 [[ "$(id -un)" == plane-preflight && "$(id -u)" -ne 0 ]] || exit 1
 [[ "$(git rev-parse HEAD)" == "$sha" ]] || { echo 'Trusted checkout changed before deployment' >&2; exit 1; }
 git diff --quiet && git diff --cached --quiet || { echo 'Jenkins checkout is dirty' >&2; exit 1; }
@@ -32,7 +30,7 @@ stage="$incoming/$sha-$run_number-$run_attempt"
 mkdir -p "$incoming"
 [[ ! -e "$stage" ]] || { echo 'Run-specific deployment source already exists' >&2; exit 1; }
 stage_tmp=$(mktemp -d "$incoming/.candidate.$sha.$run_number.$run_attempt.XXXXXX")
-docker_config=$(mktemp -d "$incoming/.docker-auth.$run_number.$run_attempt.XXXXXX")
+docker_config=$(mktemp -d "$incoming/.docker-public.$run_number.$run_attempt.XXXXXX")
 cleanup() {
   rm -rf -- "$docker_config"
   [[ ! -d "$stage_tmp" ]] || rm -rf -- "$stage_tmp"
@@ -46,7 +44,11 @@ mv "$stage_tmp" "$stage"
 
 export DOCKER_CONFIG="$docker_config"
 export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
-printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null
+unset DOCKER_AUTH_CONFIG REGISTRY_AUTH_FILE
+umask 077
+printf '{}\n' > "$DOCKER_CONFIG/config.json"
+resolved_digest=$(bash ops/jenkins/resolve-public-ghcr-digest.sh Beginning-NEW/PlaneGameCode "$sha")
+[[ "$resolved_digest" == "$digest" ]] || { echo 'Public GHCR full-SHA tag digest changed before pull' >&2; exit 1; }
 docker pull "$repository@$digest" >/dev/null
 docker pull "$gateway_image" >/dev/null
 

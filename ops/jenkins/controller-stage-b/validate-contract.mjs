@@ -52,23 +52,18 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
     'PLANE_AGENT_HOST',
     'PLANE_AGENT_ED25519_HOST_KEY',
     'PLANE_AGENT_PRIVATE_KEY',
-    'PLANE_GITHUB_SCM_USERNAME',
-    'PLANE_GITHUB_SCM_PASSWORD',
-    'PLANE_GITHUB_ACTIONS_TOKEN',
-    'PLANE_GHCR_USERNAME',
-    'PLANE_GHCR_TOKEN',
   ]) {
     if (!casc.includes(`\${trim:\${readFile:/run/secrets/${source}}}`)) {
       throw new Error(`strict file secret source missing for ${source}`);
     }
   }
-  requireMatch(casc, /usernamePassword:[\s\S]*scope: GLOBAL[\s\S]*id: "plane-github-scm-read"/, 'SCM credential contract missing');
-  requireMatch(casc, /string:[\s\S]*scope: GLOBAL[\s\S]*id: "plane-github-actions-read"/, 'Actions credential contract missing');
-  requireMatch(casc, /usernamePassword:[\s\S]*scope: GLOBAL[\s\S]*id: "plane-ghcr-pull"/, 'GHCR credential contract missing');
+  forbid(casc, /scope: GLOBAL|PLANE_GITHUB_|PLANE_GHCR_/, 'public-source controller must not define GitHub or registry credentials');
   forbid(casc, /nonVerifyingKeyVerificationStrategy|manuallyTrustedKeyVerificationStrategy/, 'host-key bypass is forbidden');
   requireMatch(job, /disabled\(true\)/, 'job must default disabled');
   requireMatch(job, /folder\('plane-game'\)[\s\S]*Item[.]Read[\s\S]*plane-webhook-gateway/, 'gateway folder read grant missing');
   requireMatch(job, /Item[.]Read'[\s\S]*plane-webhook-gateway[\s\S]*Item[.]Build'[\s\S]*plane-webhook-gateway/, 'gateway job read/build grants missing');
+  requireMatch(job, /url\('https:\/\/github[.]com\/Beginning-NEW\/PlaneGameCode[.]git'\)/, 'anonymous SCM allowlist is missing');
+  forbid(job, /credentials\(/, 'public SCM checkout must not use a credential ID');
   forbid(job, /Item[.](Configure|Delete).*plane-webhook-gateway/, 'gateway has a forbidden job grant');
   forbid(job, /triggers\s*\{|githubPush\(\)/, 'job must not install a webhook trigger');
 
@@ -80,9 +75,8 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(init, /stage-b-ready-v2/, 'authorization readiness marker missing');
   requireMatch(health, /stage-b-ready-v2/, 'healthcheck does not require authorization readiness');
 
-  for (const name of ['github-scm-username', 'github-scm-password', 'github-actions-token', 'ghcr-username', 'ghcr-token']) {
-    if (!scripts.includes(name)) throw new Error(`runner missing distinct host file ${name}`);
-  }
+  forbid(scripts, /github-(?:scm|actions)|ghcr-(?:username|token)|PLANE_(?:GITHUB|GHCR)_/,
+    'runner must not mount public-source credentials');
   requireMatch(scripts, /stat -c '%u'/, 'secret ownership validation missing');
   requireMatch(scripts, /400\|440\|600\|640/, 'strict secret mode validation missing');
   requireMatch(scripts, /stage-b-secret-preflight/, 'rootless image-user readability proof missing');
@@ -91,18 +85,20 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   requireMatch(scripts, /docker rm "\$JENKINS_CONTAINER"/, 'bounded stopped-container recreation missing');
   forbid(scripts, /docker rm\s+(?:--force|-f)/, 'forced controller removal is forbidden');
 
-  if (credentialMetadata.valuesAreMetadataOnly !== true || credentialMetadata.credentials.length !== 4) {
+  if (credentialMetadata.valuesAreMetadataOnly !== true || credentialMetadata.credentials.length !== 1) {
     throw new Error('credential metadata manifest is incomplete');
   }
   const metadataById = new Map(credentialMetadata.credentials.map((entry) => [entry.id, entry]));
   for (const [id, kind, scope] of [
-    ['plane-github-scm-read', 'usernamePassword', 'GLOBAL'],
-    ['plane-github-actions-read', 'secretText', 'GLOBAL'],
-    ['plane-ghcr-pull', 'usernamePassword', 'GLOBAL'],
     ['plane-game-agent-ssh', 'basicSSHUserPrivateKey', 'SYSTEM'],
   ]) {
     const entry = metadataById.get(id);
     if (entry?.kind !== kind || entry?.scope !== scope) throw new Error(`credential manifest mismatch for ${id}`);
+  }
+  if (credentialMetadata.publicSource?.scmAuthentication !== 'none' ||
+      credentialMetadata.publicSource?.actionsAuthentication !== 'none' ||
+      credentialMetadata.publicSource?.registryAuthentication !== 'none') {
+    throw new Error('public-source no-auth metadata is incomplete');
   }
   requireMatch(tokenHelper, /jenkins_url=http:\/\/127[.]0[.]0[.]1:18080/, 'token helper is not fixed loopback-only');
   requireMatch(tokenHelper, /create\|rotate\|prune\|revoke/, 'token lifecycle operations are incomplete');

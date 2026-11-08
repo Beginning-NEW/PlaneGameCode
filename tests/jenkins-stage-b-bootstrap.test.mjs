@@ -3,9 +3,10 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const profile = new URL('../ops/jenkins/controller-stage-b/', import.meta.url);
-const [init, casc, runner, health, tokenHelper, manifestText] = await Promise.all([
+const [init, casc, job, runner, health, tokenHelper, manifestText] = await Promise.all([
   readFile(new URL('init.groovy', profile), 'utf8'),
   readFile(new URL('casc.yaml', profile), 'utf8'),
+  readFile(new URL('plane-game-job.groovy', profile), 'utf8'),
   readFile(new URL('run-controller.sh', profile), 'utf8'),
   readFile(new URL('healthcheck.sh', profile), 'utf8'),
   readFile(new URL('manage-gateway-token.sh', profile), 'utf8'),
@@ -45,19 +46,23 @@ test('admin rotation is a controlled one-restart reapplication of a new hash', (
   assert.match(init, /bootstrap file must be removed after its one-time application/);
 });
 
-test('all credential objects have exact type, scope, purpose, and distinct file sources', () => {
+test('public-source SCM, Actions, and registries require no credential objects or host files', () => {
   assert.equal(manifest.valuesAreMetadataOnly, true);
   assert.deepEqual(manifest.credentials.map(({ id, kind, scope }) => ({ id, kind, scope })), [
-    { id: 'plane-github-scm-read', kind: 'usernamePassword', scope: 'GLOBAL' },
-    { id: 'plane-github-actions-read', kind: 'secretText', scope: 'GLOBAL' },
-    { id: 'plane-ghcr-pull', kind: 'usernamePassword', scope: 'GLOBAL' },
     { id: 'plane-game-agent-ssh', kind: 'basicSSHUserPrivateKey', scope: 'SYSTEM' },
   ]);
+  assert.equal(manifest.publicSource.scmAuthentication, 'none');
+  assert.equal(manifest.publicSource.actionsAuthentication, 'none');
+  assert.equal(manifest.publicSource.registryAuthentication, 'none');
   const files = manifest.credentials.flatMap((entry) => entry.hostFiles);
   assert.equal(new Set(files).size, files.length);
   for (const source of manifest.credentials.flatMap((entry) => entry.secretSources)) {
     assert.ok(casc.includes(`\${trim:\${readFile:${source}}}`), source);
   }
+  assert.doesNotMatch(casc, /scope: GLOBAL|PLANE_(?:GITHUB|GHCR)_/);
+  assert.doesNotMatch(job, /credentials\(/);
+  assert.match(job, /https:\/\/github[.]com\/Beginning-NEW\/PlaneGameCode[.]git/);
+  assert.doesNotMatch(runner, /github-(?:scm|actions)|ghcr-(?:username|token)/);
   assert.doesNotMatch(`${casc}\n${runner}`, /PLANE_GAME_GITHUB_TOKEN/);
 });
 

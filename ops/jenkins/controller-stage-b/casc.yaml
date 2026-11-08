@@ -45,23 +45,6 @@ credentials:
   system:
     domainCredentials:
       - credentials:
-          - usernamePassword:
-              scope: GLOBAL
-              id: "plane-github-scm-read"
-              description: "GitHub repository Contents-read checkout credential"
-              username: "${trim:${readFile:/run/secrets/PLANE_GITHUB_SCM_USERNAME}}"
-              password: "${trim:${readFile:/run/secrets/PLANE_GITHUB_SCM_PASSWORD}}"
-          - string:
-              scope: GLOBAL
-              id: "plane-github-actions-read"
-              description: "GitHub Actions-read and Contents-read API verification token"
-              secret: "${trim:${readFile:/run/secrets/PLANE_GITHUB_ACTIONS_TOKEN}}"
-          - usernamePassword:
-              scope: GLOBAL
-              id: "plane-ghcr-pull"
-              description: "GHCR read:packages pull credential"
-              username: "${trim:${readFile:/run/secrets/PLANE_GHCR_USERNAME}}"
-              password: "${trim:${readFile:/run/secrets/PLANE_GHCR_TOKEN}}"
           - basicSSHUserPrivateKey:
               scope: SYSTEM
               id: "plane-game-agent-ssh"

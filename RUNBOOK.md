@@ -37,30 +37,25 @@ GitHub Actions 是 PR/main 重型 CI 和受保护 `main` 的唯一 GHCR 发布�
 - 既有 MSSQL/Postgres/Redis/new-api 的健康、延迟、CPU/IO 有回归；
 - rootless socket、回环端口、Aegis/替代安全基线或凭据边界不再成立。
 
-## Jenkins 凭据与权限
+## Jenkins public-source identity and permissions
 
-所有凭据只存在于 Jenkins 受限 folder/credential store；不得写入仓库、参数、console 或 artifact。
+The current repository and package rehearsal is deliberately no-PAT. SCM uses the exact allowlisted anonymous HTTPS URL and no Jenkins credential ID. Jenkins validates the public GitHub Actions exact-attempt endpoint and public main-ref endpoint without an Authorization header. It then resolves the public GHCR full-SHA tag, requires one canonical sha256 digest, and repeats that resolution immediately before deployment.
 
-| Credential ID | 形式与最小权限 | 可见范围 |
-| --- | --- | --- |
-| `plane-github-scm-read` | GitHub App/PAT，仅该仓库 `metadata:read`、`contents:read` | main-only SCM source；PR folder 不存在 |
-| `plane-github-actions-read` | GitHub App token 或可轮换 fine-grained PAT，仅该仓库 `metadata:read`、`contents:read`、`actions:read` | 仅 `Serialized production CD` 校验块 |
-| `plane-ghcr-pull` | 专用机器账号用户名 + 可轮换 PAT (classic)，仅 `read:packages` 且账号仅有目标 package read | 仅 rootless agent 的 pull/deploy 块 |
-| `plane-github-webhook-secret` | 高熵 webhook HMAC secret | GitHub webhook 与 Jenkins trigger 配置；不注入 Pipeline |
+Application and gateway pulls use an empty temporary Docker config, no login, and digest-only image references. The reviewed gateway digest lives in `ops/jenkins/public-source-images.env`; it is not a private repository variable. A non-2xx response, timeout, 504, rate-limit exhaustion, malformed or inconsistent metadata, tag movement, missing public pull, or main movement fails before the resource gate or deployment.
 
-`plane-ghcr-pull` 不能使用某次 Actions 的 `GITHUB_TOKEN`，因为该 token 是 run-scoped 且会过期。若私有 package 实际要求额外 repository read scope，立即停止，由安全审查确认最小扩权；不得直接授予 write/delete packages、admin、SSH 或组织级权限。每项凭据必须记录 owner、创建/到期/轮换时间和撤销步骤。
+The host-only `plane-github-webhook-secret` HMAC and minimal Jenkins API token remain separate. Neither is injected into the Pipeline, and the no-webhook rehearsal does not require the HMAC file.
 
 ## Jenkins 配置（仅在资源与安全门禁获批后）
 
 1. 建立只发现受保护 `main` 的受限 folder/job；关闭 PR discovery、fork Jenkinsfile 和 synthetic merge builds。controller 0 executors，job 固定 label `plane-game-cd-rootless`。
 2. 安装并锁定 Pipeline、GitHub Branch Source、Credentials Binding、Lockable Resources 和 Generic Webhook Trigger 的受审版本。插件安装本身不属于本候选。
-3. 普通 `pipelineJob` 以 Jenkins 核心变量精确校验 `JOB_NAME=plane-game/main-cd`；不依赖仅 Multibranch job 才提供的 `BRANCH_NAME`。版本化 `Jenkinsfile` 固定 `DEPLOY_PORT=18081`，Job DSL 不提供端口参数，`deploy-local.sh` 与 `promote.sh` 同时拒绝缺失值和任何其他端口（包括 `9999`）。不提供 branch/SHA/digest/host/port 的人工 override。SCM 使用 `plane-github-scm-read`。
+3. 普通 `pipelineJob` 以 Jenkins 核心变量精确校验 `JOB_NAME=plane-game/main-cd`；不依赖仅 Multibranch job 才提供的 `BRANCH_NAME`。版本化 `Jenkinsfile` 固定 `DEPLOY_PORT=18081`，Job DSL 不提供端口参数，`deploy-local.sh` 与 `promote.sh` 同时拒绝缺失值和任何其他端口（包括 `9999`）。不提供 branch/SHA/digest/host/port 的人工 override。SCM 仅允许精确的匿名 HTTPS 仓库 URL，不配置 credential ID。
 4. repository webhook 仅订阅 `workflow_run`，验证 `plane-github-webhook-secret` HMAC；只在 `action=completed` 且 workflow name 为 `Checks` 时触发。映射 `workflow_run.head_sha -> CANDIDATE_SHA`、`workflow_run.id -> ACTIONS_RUN_ID`、`workflow_run.run_attempt -> ACTIONS_RUN_ATTEMPT`。
-5. 先以禁止部署的验证模式检查 webhook/API/artifact；独立安全、QA、Operations 和 CTO 审查均通过后，才允许启用 CD stage。不要恢复 `.github/workflows/deploy.yml`。
+5. 先以禁止部署的验证模式检查 webhook、public API 和 public registry；独立安全、QA、Operations 和 CTO 审查均通过后，才允许启用 CD stage。不要恢复 `.github/workflows/deploy.yml`。
 
 ## 同机 rootless 部署与回滚
 
-Jenkins checkout 必须是 candidate SHA，且 `origin/main` 与 GitHub API 当前 main 都等于该 SHA。`deploy-local.sh` 从这个已验证 Git object 生成 `compose.yaml` 和 `deploy/` 的 run-specific source，使用临时 `DOCKER_CONFIG` 登录 GHCR，按 `repository@digest` 拉取应用和固定 gateway digest，随后调用现有 `deploy/promote.sh`。
+Jenkins checkout 必须是 candidate SHA，且 `origin/main` 与 GitHub API 当前 main 都等于该 SHA。`deploy-local.sh` 从这个已验证 Git object 生成 `compose.yaml` 和 `deploy/` 的 run-specific source，使用空的临时 `DOCKER_CONFIG` 且不登录 registry，按 `repository@digest` 匿名拉取应用和固定 gateway digest，随后调用现有 `deploy/promote.sh`。
 
 `promote.sh` 持有主机 `flock`、拒绝同一 workflow 中较旧或已激活的 Actions `run_number`、保存上一份 source，并调用 `deploy.sh`。`run_attempt` 只验证候选身份；已激活 run number 的重跑不得覆盖当前版本。部署脚本验证 OCI revision label、digest、容器健康、回环 `/healthz`、首页和 `version.json`。`version.json` 必须是 JSON object，且其顶层 `sha` 精确等于批准的完整 SHA；substring 或嵌套字段不通过。
 
@@ -82,16 +77,16 @@ Jenkins checkout 必须是 candidate SHA，且 `origin/main` 与 GitHub API 当�
 
 ## 迁移回退
 
-Jenkins 首次启用前的回退是禁用/删除 main-only job 和 webhook，并撤销四项 Jenkins/GitHub 凭据；Actions `Checks` 重型 CI 和 GHCR 发布可继续，但没有自动 CD。不得用恢复旧 `deploy.yml` 作为临时回退；若未来确需恢复 Actions CD，必须作为独立变更重新安全/QA 审查，并先禁用 Jenkins，保证始终只有一条自动发布路径。
+Jenkins 首次启用前的回退是禁用/删除 main-only job 和 webhook，并撤销 Jenkins 网关 API token；Actions `Checks` 重型 CI 和 GHCR 发布可继续，但没有自动 CD。不得用恢复旧 `deploy.yml` 作为临时回退；若未来确需恢复 Actions CD，必须作为独立变更重新安全/QA 审查，并先禁用 Jenkins，保证始终只有一条自动发布路径。
 # Trusted handoff correction (authoritative for the Jenkins candidate)
 
-- Release ordering uses GitHub Actions `run_number`, not `run_id`. The verifier requires the API `run_number` to exactly match the value in `release-candidate.json`; `run_id` remains identity only. A run number may activate at most once: a later successful attempt may deploy only when that run number has never activated, and a rerun of an already active/recorded run number is rejected.
-- The image pulls finish before the final API/artifact verification and SCM `FETCH_HEAD` check. The promoter is called only after those checks still bind the same SHA, run id, run attempt, run number, and immutable digests. Main moving during a pull rejects the candidate.
+- Release ordering uses the `run_number` returned by the public exact-attempt API, not `run_id`; `run_id` remains identity only. A run number may activate at most once: a later successful attempt may deploy only when that run number has never activated, and a rerun of an already active/recorded run number is rejected.
+- The image pulls finish before the final anonymous exact-attempt, main-ref, full-SHA-tag digest, and SCM `FETCH_HEAD` checks. The promoter is called only after those checks still bind the same SHA, run id, run attempt, run number, and immutable digests. Main or tag movement during a pull rejects the candidate.
 - The final loopback health and exact `version.json` checks are inside the promoter's rollback trap. A failure keeps Jenkins red and restores `previous_healthy_sha`; any incomplete source, route, marker, or health recovery emits `ALERT`.
 - The privileged `publish` job pins `actions/checkout` and `actions/upload-artifact` to reviewed full commit SHAs; moving major-version tags are forbidden in that job. The ordinary unprivileged `verify` job remains outside this publish-only pin contract.
 - `resource-gate.sh` runs both before promotion and after the new route passes health/version checks. The post-CD invocation is the candidate-owned archived script and remains inside the promoter's rollback trap; a gate failure restores the previous healthy route and run-order markers, while its redacted numeric output is the instantaneous post-CD evidence.
 - The reviewable webhook controls are `ops/jenkins/webhook-admission.mjs`, `ops/jenkins/webhook-gateway.mjs`, `ops/jenkins/config/plane-game-webhook-gateway.service`, and `ops/jenkins/config/plane-game-job.groovy`. The CD Job DSL has no direct webhook trigger. API verification remains mandatory.
-- `plane-ghcr-pull` is a dedicated machine account username plus a PAT (classic), because external GHCR authentication supports PAT (classic). Give the token only `read:packages` and give the account only read access to the target `planegamecode` package. Record owner, SSO authorization when applicable, expiry, rotation, and revocation. Never grant `write:packages`, `delete:packages`, package/repository/org admin, SSH, or reuse a workflow's run-scoped `GITHUB_TOKEN`. Reference: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry
+- Public GHCR and Docker Hub pulls use no login and an empty temporary Docker config. There is no PAT, cached-evidence, or Board-host fallback.
 - The continuous 24-hour p5 memory, p95 CPU, disk, existing-service, and security baseline remains evidence owned by [YOU-47](/YOU/issues/YOU-47) and Operations. The instantaneous `resource-gate.sh` check cannot replace that admission gate.
 - Repository tests and the offline webhook dry-run prove only the candidate contract. They do not claim a real Jenkins controller, target host, or public endpoint PASS.
 

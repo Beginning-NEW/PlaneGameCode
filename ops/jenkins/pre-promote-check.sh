@@ -24,7 +24,7 @@ expected=$(printf '%s\t%s\t%s\t%s' "$digest" "$gateway_image" "$run_number" "$ru
   echo 'Trusted Actions handoff changed after image pull' >&2
   exit 1
 }
-git fetch --no-tags origin refs/heads/main
+GIT_TERMINAL_PROMPT=0 git fetch --no-tags origin refs/heads/main
 [[ "$(git rev-parse FETCH_HEAD)" == "$sha" ]] || {
   echo 'SCM main moved after image pull; stale candidate rejected' >&2
   exit 1
