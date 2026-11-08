@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { dirname } from 'node:path';
 
 const DELIVERY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
@@ -57,6 +58,37 @@ export class FileSecretProvider {
     const secret = readFileSync(this.path);
     if (secret.length === 0) throw Object.assign(new Error('empty secret'), { code: 'secret_unavailable' });
     return secret;
+  }
+}
+
+export class JenkinsApiTokenProvider extends FileSecretProvider {
+  get() {
+    try {
+      const parent = lstatSync(dirname(this.path));
+      if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o777) !== 0o700) {
+        throw new Error('invalid token metadata');
+      }
+      const fd = openSync(this.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      let raw;
+      try {
+        const file = fstatSync(fd);
+        if (!file.isFile() || file.nlink !== 1 || file.uid !== process.getuid() ||
+            (file.mode & 0o777) !== 0o600) throw new Error('invalid token metadata');
+        raw = readFileSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      if (raw.length > 4096) throw new Error('invalid token document');
+      const value = JSON.parse(raw.toString('utf8'));
+      if (value?.version !== 1 || Object.keys(value).sort().join(',') !== 'token,uuid,version' ||
+          !/^[0-9a-zA-Z]{16,256}$/.test(value.token) ||
+          !/^[0-9a-fA-F-]{36}$/.test(value.uuid)) {
+        throw new Error('invalid token document');
+      }
+      return Buffer.from(value.token, 'ascii');
+    } catch {
+      throw Object.assign(new Error('invalid token document'), { code: 'credential_unavailable' });
+    }
   }
 }
 

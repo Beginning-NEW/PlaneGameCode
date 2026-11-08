@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   DeliveryStore,
   FileSecretProvider,
+  JenkinsApiTokenProvider,
   WebhookAdmission,
 } from './webhook-admission.mjs';
 
@@ -252,7 +253,7 @@ function main() {
     enqueuer: new JenkinsEnqueuer({
       baseUrl: required('JENKINS_URL'),
       user: required('JENKINS_USER'),
-      tokenProvider: new FileSecretProvider(required('JENKINS_API_TOKEN_FILE')),
+      tokenProvider: new JenkinsApiTokenProvider(required('JENKINS_API_TOKEN_FILE')),
     }),
     logger: ({ outcome, code }) => console.info(`webhook_admission outcome=${outcome} code=${code}`),
   });

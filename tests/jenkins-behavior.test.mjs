@@ -144,7 +144,9 @@ exit 2
   assert.match(result.stderr, /SCM main moved after image pull/);
 
   const localDeploy = await readFile(join(root, 'ops/jenkins/deploy-local.sh'), 'utf8');
-  const pull = localDeploy.indexOf('docker pull "$gateway_image"');
+  const pull = localDeploy.indexOf('bash ops/jenkins/pull-public-images.sh');
+  const pullHelper = await readFile(join(root, 'ops/jenkins/pull-public-images.sh'), 'utf8');
+  assert.match(pullHelper, /docker pull "\$gateway_image"/);
   const gate = localDeploy.indexOf('bash ops/jenkins/resource-gate.sh');
   const revalidate = localDeploy.indexOf('pre-promote-check.sh');
   const promote = localDeploy.indexOf('bash "$stage/deploy/promote.sh"');

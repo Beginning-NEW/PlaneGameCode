@@ -24,8 +24,9 @@ COPY --chown=jenkins:jenkins ops/jenkins/controller-stage-b/plane-game-job.groov
 COPY --chown=jenkins:jenkins ops/jenkins/controller-stage-b/healthcheck.sh /opt/plane-game-controller/healthcheck.sh
 
 ENV CASC_JENKINS_CONFIG=/usr/share/jenkins/ref/casc.yaml \
+    CASC_STRICT_SECRET_RESOLUTION=true \
     JENKINS_OPTS="--httpListenAddress=0.0.0.0 --httpPort=8080" \
-    JAVA_OPTS="-Djava.awt.headless=true -Djenkins.install.runSetupWizard=false -Xms128m -Xmx512m -XX:MaxMetaspaceSize=256m -XX:+ExitOnOutOfMemoryError" \
+    JAVA_OPTS="-Djava.awt.headless=true -Djenkins.install.runSetupWizard=false -Dcasc.strict.secret.resolution=true -Djenkins.security.ApiTokenProperty.adminCanGenerateNewTokens=true -Xms128m -Xmx512m -XX:MaxMetaspaceSize=256m -XX:+ExitOnOutOfMemoryError" \
     MALLOC_ARENA_MAX=2
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=90s --retries=12 \

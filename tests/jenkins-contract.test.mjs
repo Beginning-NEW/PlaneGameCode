@@ -2,9 +2,13 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [pipeline, verify, gate, localDeploy, promote, docs, checks, jobDsl] = await Promise.all([
+const [pipeline, verify, resolveDigest, pullHelper, publicImages, gate, localDeploy, promote, docs, checks,
+  jobDsl] = await Promise.all([
   readFile(new URL('../Jenkinsfile', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/verify-candidate.sh', import.meta.url), 'utf8'),
+  readFile(new URL('../ops/jenkins/resolve-public-ghcr-digest.sh', import.meta.url), 'utf8'),
+  readFile(new URL('../ops/jenkins/pull-public-images.sh', import.meta.url), 'utf8'),
+  readFile(new URL('../ops/jenkins/public-source-images.env', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/resource-gate.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/deploy-local.sh', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/promote.sh', import.meta.url), 'utf8'),
@@ -46,7 +50,7 @@ test('missing or tampered job identity and deployment port fail the static contr
   }
 });
 
-test('webhook metadata is verified against a successful trusted Actions main run and artifact', () => {
+test('webhook metadata is verified through the anonymous exact-attempt and main-ref APIs', () => {
   for (const field of [
     '.name == "Checks"',
     '.path == ".github/workflows/checks.yml"',
@@ -59,25 +63,34 @@ test('webhook metadata is verified against a successful trusted Actions main run
   ]) {
     assert.ok(verify.includes(field), `missing trusted-run assertion: ${field}`);
   }
-  assert.match(verify, /release-candidate-\$sha/);
-  assert.match(verify, /Expected exactly one unexpired release candidate artifact/);
+  assert.match(verify, /actions\/runs\/\$run_id\/attempts\/\$run_attempt/);
   assert.match(verify, /git\/ref\/heads\/main/);
   assert.match(verify, /Protected main moved; stale candidate rejected/);
-  assert.match(verify, /image_digest.*sha256/s);
+  assert.match(verify, /resolve-public-ghcr-digest[.]sh/);
+  assert.doesNotMatch(verify, /Authorization:|artifacts\/|GH_API_TOKEN/);
 });
 
-test('GHCR pull uses a distinct sustainable read credential and temporary Docker config', () => {
-  assert.match(pipeline, /plane-github-actions-read/);
-  assert.match(pipeline, /plane-ghcr-pull/);
-  assert.match(localDeploy, /GHCR_USER/);
-  assert.match(localDeploy, /GHCR_TOKEN/);
-  assert.match(localDeploy, /mktemp -d .*docker-auth/);
+test('public registries use no login, a blank Docker config, re-resolution, and digest-only pulls', () => {
+  assert.doesNotMatch(pipeline, /withCredentials|credentialsId/);
+  assert.match(resolveDigest, /ghcr[.]io\/token[?]scope=/);
+  assert.match(resolveDigest, /docker-content-digest/);
+  assert.match(resolveDigest, /--retry 0.*--connect-timeout 10.*--max-time 30/s);
+  assert.match(resolveDigest, /rate limit is exhausted/);
+  assert.match(publicImages, /^NGINX_BASE_IMAGE=.*@sha256:[0-9a-f]{64}$/m);
+  assert.match(publicImages, /^GATEWAY_IMAGE=.*@sha256:[0-9a-f]{64}$/m);
+  assert.match(localDeploy, /mktemp -d .*docker-public/);
+  assert.match(localDeploy, /printf '\{\}\\n' > "\$DOCKER_CONFIG\/config[.]json"/);
+  assert.match(localDeploy, /unset DOCKER_AUTH_CONFIG REGISTRY_AUTH_FILE/);
+  assert.match(localDeploy, /pull-public-images[.]sh/);
   assert.match(localDeploy, /trap cleanup EXIT/);
-  assert.match(localDeploy, /docker pull "\$repository@\$digest"/);
+  assert.match(pullHelper, /resolve-public-ghcr-digest[.]sh/);
+  assert.match(pullHelper, /docker pull "\$repository@\$digest"/);
+  assert.match(pullHelper, /docker pull "\$gateway_image"/);
+  assert.doesNotMatch(`${localDeploy}\n${pullHelper}`, /docker login|GHCR_(?:USER|TOKEN)|GH_API_TOKEN/);
   assert.match(promote, /expected_version=\$\(printf '\{"sha":"%s"\}' "\$sha"\)/);
   assert.match(localDeploy, /deploy\/promote[.]sh/);
-  assert.doesNotMatch(`${pipeline}\n${verify}\n${gate}\n${localDeploy}\n${docs}`, /ACR_|aliyuncs/i);
-  assert.doesNotMatch(localDeploy, /GITHUB_TOKEN/);
+  assert.doesNotMatch(`${pipeline}\n${verify}\n${gate}\n${localDeploy}\n${pullHelper}\n${docs}`, /ACR_|aliyuncs/i);
+  assert.doesNotMatch(`${localDeploy}\n${pullHelper}`, /GITHUB_TOKEN/);
 });
 
 test('same-host executor and resource stop gates match the operations budget', () => {
@@ -101,7 +114,11 @@ test('same-host executor and resource stop gates match the operations budget', (
   assert.match(docs, /`MemAvailable < 2 GiB`.*5 分钟/);
   assert.match(docs, /任何一次 `< 1[.]5 GiB`/);
   assert.match(docs, /根盘可用 `< 30 GiB`/);
-  assert.match(docs, /2[.]9 GiB 低于入场线/);
+  assert.match(docs, /本节定义资源入场线，不陈述当前目标主机状态/);
+  assert.match(docs, /Operations.*当次连续 24 小时证据/);
+  assert.match(docs, /历史容量快照不得作为当前 Go\/No-Go 结论/);
+  assert.match(docs, /artifact.*非权威输出/);
+  assert.match(docs, /Jenkins 不枚举、下载或解析该 artifact/);
 });
 
 test('Actions gives PR checks no CD secret path and main is the only image publisher', () => {
@@ -120,8 +137,8 @@ test('Actions gives PR checks no CD secret path and main is the only image publi
     assert.match(action[1], /^[^@]+@[0-9a-f]{40}$/);
   }
   assert.doesNotMatch(checks, /DEPLOY_SSH|DEPLOY_HOST|GHCR_READ_TOKEN/);
-  assert.match(docs, /plane-github-scm-read/);
-  assert.match(docs, /plane-github-actions-read/);
-  assert.match(docs, /plane-ghcr-pull/);
+  assert.match(docs, /anonymous HTTPS/i);
+  assert.match(docs, /exact-attempt/i);
+  assert.doesNotMatch(docs, /plane-(?:github-(?:scm|actions)-read|ghcr-pull)/);
   assert.match(docs, /plane-github-webhook-secret/);
 });

@@ -27,7 +27,10 @@
       "-Xmx512m",
       "-XX:MaxMetaspaceSize=256m",
       "-XX:+ExitOnOutOfMemoryError"
-    ]
+    ],
+    "setupWizard": false,
+    "strictSecretResolution": true,
+    "readinessProof": "/var/jenkins_home/.stage-b-ready"
   },
   "agent": {
     "name": "plane-game-cd-rootless",
@@ -47,8 +50,17 @@
     "serviceScope": "user",
     "defaultState": "disabled",
     "dockerHost": "unix:///run/user/1003/docker.sock",
-    "jenkinsUrl": "http://127.0.0.1:18080"
+    "jenkinsUrl": "http://127.0.0.1:18080",
+    "principal": "plane-webhook-gateway",
+    "globalPermissions": ["Overall/Read"],
+    "jobPermissions": ["Job/Read", "Job/Build"]
   },
+  "bootstrap": {
+    "adminPrincipal": "plane-admin",
+    "format": "#jbcrypt",
+    "oneTimeSecretSource": "/run/secrets/PLANE_ADMIN_BOOTSTRAP_BCRYPT"
+  },
+  "credentialManifest": "credential-manifest.json",
   "jobs": {
     "plane-game/main-cd": "disabled"
   }
