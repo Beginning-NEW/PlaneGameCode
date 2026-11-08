@@ -1,116 +1,285 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-const [pipeline, verify, resolver, deploy, casc, job, images] = await Promise.all([
+const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+const sha = 'a'.repeat(40);
+const digest = `sha256:${'b'.repeat(64)}`;
+const changedDigest = `sha256:${'c'.repeat(64)}`;
+const gatewayImage = `nginxinc/nginx-unprivileged@sha256:${'d'.repeat(64)}`;
+
+const [pipeline, casc, job, images, pullHelper] = await Promise.all([
   readFile(new URL('../Jenkinsfile', import.meta.url), 'utf8'),
-  readFile(new URL('../ops/jenkins/verify-candidate.sh', import.meta.url), 'utf8'),
-  readFile(new URL('../ops/jenkins/resolve-public-ghcr-digest.sh', import.meta.url), 'utf8'),
-  readFile(new URL('../ops/jenkins/deploy-local.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/controller-stage-b/casc.yaml', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/controller-stage-b/plane-game-job.groovy', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/public-source-images.env', import.meta.url), 'utf8'),
+  readFile(new URL('../ops/jenkins/pull-public-images.sh', import.meta.url), 'utf8'),
 ]);
 
-const sha = 'a'.repeat(40);
-const expected = {
-  id: 9001,
-  run_attempt: 2,
-  run_number: 77,
-  name: 'Checks',
-  path: '.github/workflows/checks.yml',
-  event: 'push',
-  head_branch: 'main',
-  head_sha: sha,
-  status: 'completed',
-  conclusion: 'success',
-  repository: { full_name: 'Beginning-NEW/PlaneGameCode' },
-  head_repository: { full_name: 'Beginning-NEW/PlaneGameCode' },
-};
+const mockCurl = String.raw`#!/usr/bin/env bash
+set -euo pipefail
 
-function validAttempt(run) {
-  return run.id === 9001 && run.run_attempt === 2 && run.run_number > 0 &&
-    run.name === 'Checks' && run.path === '.github/workflows/checks.yml' &&
-    run.event === 'push' && run.head_branch === 'main' && run.head_sha === sha &&
-    run.status === 'completed' && run.conclusion === 'success' &&
-    run.repository?.full_name === 'Beginning-NEW/PlaneGameCode' &&
-    run.head_repository?.full_name === 'Beginning-NEW/PlaneGameCode';
+body=''
+headers=''
+url=''
+while (($#)); do
+  case "$1" in
+    --dump-header|--output)
+      option=$1
+      value=$2
+      shift 2
+      [[ "$option" == --dump-header ]] && headers=$value || body=$value
+      ;;
+    --write-out|--retry|--connect-timeout|--max-time|--config|--header|-H)
+      shift 2
+      ;;
+    --silent|--show-error)
+      shift
+      ;;
+    *)
+      url=$1
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$body" && -n "$headers" && -n "$url" ]]
+: > "$headers"
+status=200
+case "$url" in
+  https://api.github.com/*/actions/runs/*)
+    [[ "$MOCK_PUBLIC_MODE" != github-timeout ]] || exit 28
+    [[ "$MOCK_PUBLIC_MODE" != github-504 ]] || status=504
+    [[ "$MOCK_PUBLIC_MODE" != github-rate ]] || printf 'X-RateLimit-Remaining: 0\r\n' >> "$headers"
+    cp "$MOCK_PUBLIC_FIXTURE/run.json" "$body"
+    ;;
+  https://api.github.com/*/git/ref/heads/main)
+    cp "$MOCK_PUBLIC_FIXTURE/main.json" "$body"
+    ;;
+  https://ghcr.io/token*)
+    [[ "$MOCK_PUBLIC_MODE" != registry-timeout ]] || exit 28
+    [[ "$MOCK_PUBLIC_MODE" != registry-504 ]] || status=504
+    [[ "$MOCK_PUBLIC_MODE" != registry-rate ]] || printf 'RateLimit-Remaining: 0\r\n' >> "$headers"
+    cp "$MOCK_PUBLIC_FIXTURE/token.json" "$body"
+    ;;
+  https://ghcr.io/v2/beginning-new/planegamecode/manifests/*)
+    cp "$MOCK_PUBLIC_FIXTURE/manifest.json" "$body"
+    case "$MOCK_PUBLIC_MODE" in
+      digest-malformed) printf 'Docker-Content-Digest: latest\r\n' >> "$headers" ;;
+      digest-multiple)
+        printf 'Docker-Content-Digest: %s\r\nDocker-Content-Digest: %s\r\n' "$MOCK_DIGEST" "$MOCK_CHANGED_DIGEST" >> "$headers"
+        ;;
+      *) printf 'Docker-Content-Digest: %s\r\n' "$MOCK_DIGEST" >> "$headers" ;;
+    esac
+    ;;
+  *)
+    printf 'unexpected mock URL: %s\n' "$url" >&2
+    exit 64
+    ;;
+esac
+printf '%s' "$status"
+`;
+
+const mockDocker = String.raw`#!/usr/bin/env bash
+set -euo pipefail
+[[ "$(tr -d '[:space:]' < "$DOCKER_CONFIG/config.json")" == '{}' ]]
+printf '%s\n' "$*" >> "$MOCK_DOCKER_EVENTS"
+[[ "$1" == pull ]]
+[[ "$MOCK_DOCKER_FAIL_ON" != "$2" ]]
+`;
+
+function shellAvailable() {
+  if (process.platform === 'win32') return false;
+  return spawnSync('bash', ['-lc', 'command -v jq >/dev/null'], { encoding: 'utf8' }).status === 0;
 }
 
-test('anonymous exact-attempt proof rejects every identity, SHA, attempt, and conclusion mismatch', () => {
-  assert.equal(validAttempt(expected), true);
-  for (const mutation of [
-    { id: 9002 },
-    { run_attempt: 3 },
-    { run_number: 0 },
-    { name: 'Other' },
-    { path: '.github/workflows/other.yml' },
-    { event: 'workflow_dispatch' },
-    { head_branch: 'feature' },
-    { head_sha: 'b'.repeat(40) },
-    { status: 'in_progress' },
-    { conclusion: 'failure' },
-    { repository: { full_name: 'fork/PlaneGameCode' } },
-    { head_repository: { full_name: 'fork/PlaneGameCode' } },
-  ]) assert.equal(validAttempt({ ...expected, ...mutation }), false, JSON.stringify(mutation));
+const canRunShellDrills = shellAvailable();
 
-  for (const assertion of [
-    '.name == "Checks"',
-    '.path == ".github/workflows/checks.yml"',
-    '.event == "push"',
-    '.head_branch == "main"',
-    '.head_sha == $sha',
-    '.status == "completed"',
-    '.conclusion == "success"',
-    '.repository.full_name == $repository',
-    '.head_repository.full_name == $repository',
-  ]) assert.ok(verify.includes(assertion), assertion);
-});
+function expectedRun(overrides = {}) {
+  return {
+    id: 9001,
+    run_attempt: 2,
+    run_number: 77,
+    name: 'Checks',
+    path: '.github/workflows/checks.yml',
+    event: 'push',
+    head_branch: 'main',
+    head_sha: sha,
+    status: 'completed',
+    conclusion: 'success',
+    repository: { full_name: 'Beginning-NEW/PlaneGameCode' },
+    head_repository: { full_name: 'Beginning-NEW/PlaneGameCode' },
+    ...overrides,
+  };
+}
+
+async function createFixture({ run = expectedRun(), mainSha = sha, manifest = { schemaVersion: 2 }, mode = '' } = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'plane-public-source-'));
+  const bin = join(root, 'bin');
+  const dockerConfig = join(root, 'docker-config');
+  await mkdir(bin);
+  await mkdir(dockerConfig);
+  await writeFile(join(root, 'run.json'), JSON.stringify(run));
+  await writeFile(join(root, 'main.json'), JSON.stringify({ object: { sha: mainSha } }));
+  await writeFile(join(root, 'token.json'), JSON.stringify({ token: 'fixture-token' }));
+  await writeFile(join(root, 'manifest.json'), JSON.stringify(manifest));
+  await writeFile(join(dockerConfig, 'config.json'), '{}\n');
+  await writeFile(join(bin, 'curl'), mockCurl, { mode: 0o755 });
+  await writeFile(join(bin, 'docker'), mockDocker, { mode: 0o755 });
+  await chmod(join(bin, 'curl'), 0o755);
+  await chmod(join(bin, 'docker'), 0o755);
+  return {
+    root,
+    dockerConfig,
+    events: join(root, 'docker-events.log'),
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      GITHUB_REPOSITORY: 'Beginning-NEW/PlaneGameCode',
+      MOCK_PUBLIC_FIXTURE: root,
+      MOCK_PUBLIC_MODE: mode,
+      MOCK_DIGEST: digest,
+      MOCK_CHANGED_DIGEST: changedDigest,
+      MOCK_DOCKER_EVENTS: join(root, 'docker-events.log'),
+      MOCK_DOCKER_FAIL_ON: '',
+      DOCKER_CONFIG: dockerConfig,
+    },
+    cleanup: () => rm(root, { recursive: true, force: true }),
+  };
+}
+
+function run(script, args, fixture, extraEnv = {}) {
+  return spawnSync('bash', [join(repositoryRoot, script), ...args], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+    env: { ...fixture.env, ...extraEnv },
+  });
+}
 
 test('SCM, Actions, and public image proof have no Jenkins credential path', () => {
   assert.match(job, /url\('https:\/\/github[.]com\/Beginning-NEW\/PlaneGameCode[.]git'\)/);
   assert.doesNotMatch(job, /credentials\(/);
   assert.doesNotMatch(casc, /scope: GLOBAL|PLANE_(?:GITHUB|GHCR)_/);
   assert.doesNotMatch(pipeline, /withCredentials|credentialsId/);
-  assert.match(pipeline, /git rev-parse HEAD/);
-  assert.match(pipeline, /git rev-parse FETCH_HEAD/);
-  assert.match(verify, /actions\/runs\/\$run_id\/attempts\/\$run_attempt/);
-  assert.match(verify, /git\/ref\/heads\/main/);
-  assert.doesNotMatch(verify, /Authorization:|artifacts\/|GH_API_TOKEN/);
-});
-
-test('public API and registry outages, non-2xx, limits, and malformed digests fail closed', () => {
-  const acceptedStatus = (status) => /^2[0-9][0-9]$/.test(String(status));
-  assert.equal(acceptedStatus(200), true);
-  for (const status of [0, 403, 404, 429, 500, 504]) assert.equal(acceptedStatus(status), false);
-  for (const source of [verify, resolver]) {
-    assert.match(source, /--retry 0/);
-    assert.match(source, /--connect-timeout 10/);
-    assert.match(source, /--max-time 30/);
-    assert.match(source, /\^2\[0-9\]\[0-9\]\$/);
-    assert.match(source, /rate limit/i);
-  }
-  assert.match(verify, /unavailable or timed out/);
-  assert.match(resolver, /registry returned HTTP/);
-  assert.match(resolver, /manifest is malformed/);
-  assert.match(resolver, /one canonical sha256 digest/);
-  assert.match(resolver, /docker-content-digest/);
-});
-
-test('public full-SHA digest is re-resolved and both images pull by digest with no login', () => {
-  const initial = `sha256:${'b'.repeat(64)}`;
-  assert.equal(initial === initial, true);
-  assert.equal(initial === `sha256:${'c'.repeat(64)}`, false);
   assert.match(images, /^NGINX_BASE_IMAGE=.*@sha256:[0-9a-f]{64}$/m);
   assert.match(images, /^GATEWAY_IMAGE=.*@sha256:[0-9a-f]{64}$/m);
-  assert.match(deploy, /printf '\{\}\\n' > "\$DOCKER_CONFIG\/config[.]json"/);
-  assert.match(deploy, /unset DOCKER_AUTH_CONFIG REGISTRY_AUTH_FILE/);
-  assert.match(deploy, /resolved_digest=.*resolve-public-ghcr-digest[.]sh/);
-  assert.match(deploy, /"\$resolved_digest" == "\$digest"/);
-  assert.match(deploy, /docker pull "\$repository@\$digest"/);
-  assert.match(deploy, /docker pull "\$gateway_image"/);
-  assert.doesNotMatch(deploy, /docker login|GHCR_(?:USER|TOKEN)|GH_API_TOKEN/);
-  const pull = deploy.indexOf('docker pull "$gateway_image"');
-  const gate = deploy.indexOf('bash ops/jenkins/resource-gate.sh');
-  assert.ok(pull >= 0 && pull < gate);
+  assert.doesNotMatch(pullHelper, /docker login|GHCR_(?:USER|TOKEN)|GH_API_TOKEN/);
+});
+
+test('production shell accepts one exact anonymous run, main ref, and registry digest', { skip: !canRunShellDrills }, async () => {
+  const fixture = await createFixture();
+  try {
+    const result = run('ops/jenkins/verify-candidate.sh', [sha, '9001', '2'], fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), `${digest}\t${gatewayImage}\t77\t2`);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('production shell rejects run, attempt, SHA, conclusion, repository, and main-ref mismatches', { skip: !canRunShellDrills }, async () => {
+  const cases = [
+    { label: 'run id', run: expectedRun({ id: 9002 }) },
+    { label: 'attempt', run: expectedRun({ run_attempt: 3 }) },
+    { label: 'SHA', run: expectedRun({ head_sha: 'e'.repeat(40) }) },
+    { label: 'conclusion', run: expectedRun({ conclusion: 'failure' }) },
+    { label: 'repository', run: expectedRun({ repository: { full_name: 'fork/PlaneGameCode' } }) },
+    { label: 'main ref', mainSha: 'f'.repeat(40) },
+  ];
+  for (const scenario of cases) {
+    const fixture = await createFixture(scenario);
+    try {
+      const result = run('ops/jenkins/verify-candidate.sh', [sha, '9001', '2'], fixture);
+      assert.notEqual(result.status, 0, `${scenario.label} unexpectedly passed`);
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
+test('production shell fails closed on public API and registry transport, HTTP, rate, and metadata faults', { skip: !canRunShellDrills }, async () => {
+  const cases = [
+    { mode: 'github-timeout', error: /unavailable or timed out/i },
+    { mode: 'github-504', error: /HTTP 504/ },
+    { mode: 'github-rate', error: /rate limit exhausted/i },
+    { mode: 'registry-timeout', error: /unavailable or timed out/i },
+    { mode: 'registry-504', error: /HTTP 504/ },
+    { mode: 'registry-rate', error: /rate limit is exhausted/i },
+    { mode: 'digest-malformed', error: /canonical sha256 digest/i },
+    { mode: 'digest-multiple', error: /canonical sha256 digest/i },
+    { manifest: { schemaVersion: 1 }, error: /manifest is malformed/i },
+  ];
+  for (const scenario of cases) {
+    const fixture = await createFixture(scenario);
+    try {
+      const result = run('ops/jenkins/verify-candidate.sh', [sha, '9001', '2'], fixture);
+      assert.notEqual(result.status, 0, `${scenario.mode ?? 'malformed manifest'} unexpectedly passed`);
+      assert.match(result.stderr, scenario.error);
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
+test('digest-only pull helper re-resolves then pulls both exact public images with an empty config', { skip: !canRunShellDrills }, async () => {
+  const fixture = await createFixture();
+  try {
+    const result = run(
+      'ops/jenkins/pull-public-images.sh',
+      [sha, 'ghcr.io/beginning-new/planegamecode', digest, gatewayImage],
+      fixture,
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual((await readFile(fixture.events, 'utf8')).trim().split('\n'), [
+      `pull ghcr.io/beginning-new/planegamecode@${digest}`,
+      `pull ${gatewayImage}`,
+    ]);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('digest change and ambient auth fail before any public image pull', { skip: !canRunShellDrills }, async () => {
+  for (const scenario of [
+    { expected: changedDigest, error: /digest changed before pull/, env: {} },
+    { expected: digest, error: /ambient registry authentication is forbidden/, env: { DOCKER_AUTH_CONFIG: '{}' } },
+  ]) {
+    const fixture = await createFixture();
+    try {
+      const result = run(
+        'ops/jenkins/pull-public-images.sh',
+        [sha, 'ghcr.io/beginning-new/planegamecode', scenario.expected, gatewayImage],
+        fixture,
+        scenario.env,
+      );
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, scenario.error);
+      assert.equal(existsSync(fixture.events), false, 'docker must not run before the trust gate passes');
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
+test('a public pull failure is fatal and does not continue to the gateway pull', { skip: !canRunShellDrills }, async () => {
+  const fixture = await createFixture();
+  const application = `ghcr.io/beginning-new/planegamecode@${digest}`;
+  try {
+    const result = run(
+      'ops/jenkins/pull-public-images.sh',
+      [sha, 'ghcr.io/beginning-new/planegamecode', digest, gatewayImage],
+      fixture,
+      { MOCK_DOCKER_FAIL_ON: application },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /public application pull failed/);
+    assert.equal((await readFile(fixture.events, 'utf8')).trim(), `pull ${application}`);
+  } finally {
+    await fixture.cleanup();
+  }
 });

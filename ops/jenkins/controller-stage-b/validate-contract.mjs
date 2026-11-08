@@ -136,7 +136,7 @@ async function main() {
     readFile(new URL('healthcheck.sh', directory), 'utf8'),
     readFile(new URL('manage-gateway-token.sh', directory), 'utf8'),
     readFile(new URL('credential-manifest.json', directory), 'utf8'),
-    ...['build-image.sh', 'run-controller.sh', 'disable-stage-b.sh', 'backup-home.sh',
+    ...['build-image.sh', 'generate-admin-bootstrap.sh', 'run-controller.sh', 'disable-stage-b.sh', 'backup-home.sh',
       'restore-home.sh', 'rollback-stage-b.sh'].map((file) => readFile(new URL(file, directory), 'utf8')),
   ]);
   assertStageBContract({ runtime, dockerfile, casc, job, gateway, scripts: scriptTexts.join('\n'),

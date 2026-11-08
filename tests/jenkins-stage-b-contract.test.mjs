@@ -41,6 +41,7 @@ async function walk(relative = '') {
 
 const scriptNames = [
   'build-image.sh',
+  'generate-admin-bootstrap.sh',
   'run-controller.sh',
   'disable-stage-b.sh',
   'backup-home.sh',

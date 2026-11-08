@@ -47,10 +47,7 @@ export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
 unset DOCKER_AUTH_CONFIG REGISTRY_AUTH_FILE
 umask 077
 printf '{}\n' > "$DOCKER_CONFIG/config.json"
-resolved_digest=$(bash ops/jenkins/resolve-public-ghcr-digest.sh Beginning-NEW/PlaneGameCode "$sha")
-[[ "$resolved_digest" == "$digest" ]] || { echo 'Public GHCR full-SHA tag digest changed before pull' >&2; exit 1; }
-docker pull "$repository@$digest" >/dev/null
-docker pull "$gateway_image" >/dev/null
+bash ops/jenkins/pull-public-images.sh "$sha" "$repository" "$digest" "$gateway_image"
 
 bash ops/jenkins/resource-gate.sh
 bash ops/jenkins/pre-promote-check.sh \

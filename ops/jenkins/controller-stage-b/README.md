@@ -34,17 +34,32 @@ node ops/jenkins/controller-stage-b/generate-plugin-lock.mjs \
 
 ## First-run administrator and readiness
 
-The setup wizard remains disabled. A home without the fixed `plane-admin` local principal fails closed unless `admin-bootstrap-bcrypt` is mounted read-only as `/run/secrets/PLANE_ADMIN_BOOTSTRAP_BCRYPT`. The file contains one Jenkins-native bcrypt value (`#jbcrypt:$2...`), never a plaintext password. Generate it without putting the password in shell arguments or environment values:
+The setup wizard remains disabled. A home without the fixed `plane-admin` local principal fails closed unless `admin-bootstrap-bcrypt` is mounted read-only as `/run/secrets/PLANE_ADMIN_BOOTSTRAP_BCRYPT`. The file contains one Jenkins-native bcrypt value (`#jbcrypt:$2...`), never a plaintext password.
+
+Generate the file with the repository helper after the approved Stage B image has been built:
 
 ```sh
-umask 077
 approved_dir="$HOME/.config/plane-game/controller-stage-b"
-printf '#jbcrypt:' > "$approved_dir/admin-bootstrap-bcrypt"
-htpasswd -nBC 12 plane-admin | sed -e 's/^[^:]*://' -e 's/^\$2y\$/\$2a\$/' >> "$approved_dir/admin-bootstrap-bcrypt"
-chmod 0600 "$approved_dir/admin-bootstrap-bcrypt"
+image_id_file="$HOME/.config/plane-game/controller-stage-b/image-id"
+bash ops/jenkins/controller-stage-b/generate-admin-bootstrap.sh \
+  "$image_id_file" "$approved_dir"
 ```
 
-The password prompts are interactive and hidden. On the first healthy boot, remove `admin-bootstrap-bcrypt` from the approved directory before any restart. A retained identical file makes the next start fail; this proves the file is one-time. For later starts, run the bounded `disable-stage-b.sh` path and then `run-controller.sh`; the runner removes only the stopped, correctly labelled controller and recreates its read-only mounts while retaining the named home volume. A restart without the bootstrap file succeeds from the persisted user record. To rotate, disable the controller, write a different `#jbcrypt` value to the same protected file, start once, wait for healthy status, then remove it. Reusing the previously applied hash is rejected.
+The helper does not require host `htpasswd`, Python, a package install, or network access. It runs the Jenkins-bundled bcrypt implementation inside the exact immutable Stage B image with `--network none`, a read-only root filesystem, dropped capabilities, and the rootless UID. Both password prompts are interactive and hidden. The plaintext is never placed in an argument, environment value, host file, image layer, or Docker-inspect-visible string; the helper writes only the final hash atomically as mode `0600` and never prints it.
+
+On the first healthy boot, remove `admin-bootstrap-bcrypt` from the approved directory before any ordinary restart. A retained identical file makes the next start fail; this proves the file is one-time. For later starts, run the bounded `disable-stage-b.sh` path and then `run-controller.sh`; the runner removes only the stopped, correctly labelled controller and recreates its read-only mounts while retaining the named home volume. A restart without the bootstrap file succeeds from the persisted user record.
+
+For a controlled rotation, disable the controller, verify the prior bootstrap file is absent, run `generate-admin-bootstrap.sh` again to create a different hash, start once, wait for the authenticated readiness proof, then remove the file. Reusing the previously applied hash is rejected.
+
+### Required target bootstrap drill
+
+Operations must execute this on a disposable Stage B rehearsal home before readiness is frozen. Do not print, copy, upload, or attach the hash; record only exit states and file metadata.
+
+1. With a fresh bounded home volume and no `admin-bootstrap-bcrypt`, run `run-controller.sh`, wait for the controller to exit, and prove exit `78`, no `.stage-b-ready`, and no listening healthy controller.
+2. Run `generate-admin-bootstrap.sh` interactively, verify owner UID `1003` and mode `0600` without reading the file, then start the same fresh home and prove `healthcheck.sh` succeeds.
+3. Disable the controller, remove exactly `admin-bootstrap-bcrypt`, restart the persisted home, and prove readiness still succeeds.
+4. Disable it again, generate a new hash, start once, and prove readiness succeeds with the rotated password. Disable while deliberately retaining that same file, restart once, and prove exit `78` with no readiness marker; then remove the file and prove the persisted restart succeeds.
+5. Attach only the candidate SHA/tree, image ID, home-volume name, timestamps, exit codes, readiness results, and `stat` owner/mode to the Operations review. Never attach container logs from a password-entry session or any secret value.
 
 `init.groovy` clears the readiness marker first and recreates it only after SYSTEM has verified the admin ACL, the gateway ACL, the SYSTEM SSH credential, the public-source no-credential job, zero controller executors, the disabled inbound port, and the bounded SSH agent. `healthcheck.sh` requires that authorization/bootstrap proof as well as login `200` and anonymous API `403`; those HTTP codes alone cannot make the controller healthy.
 
@@ -91,11 +106,12 @@ From the repository root:
 node ops/jenkins/controller-stage-b/validate-contract.mjs
 node --test tests/jenkins-stage-b-contract.test.mjs
 node --test tests/jenkins-stage-b-bootstrap.test.mjs
-bash -n ops/jenkins/controller-stage-b/*.sh
+node --test tests/jenkins-public-source.test.mjs
+bash -n ops/jenkins/controller-stage-b/*.sh ops/jenkins/*.sh
 (
   cd ops/jenkins/controller-stage-b
   sha256sum -c config-files.sha256
 )
 ```
 
-The validator rejects root-level/enableable gateway units, non-loopback or port-50000 exposure, controller executors, enabled jobs, host-key bypass, plaintext key/token patterns, rootful Docker, sudo, prune, wildcard deletion, and unbounded cleanup.
+The public-source test executes the production verification, registry resolver, and digest-only pull helper against injected API timeout, HTTP, rate-limit, metadata, SHA/run/attempt, and digest-change failures. The validator rejects root-level/enableable gateway units, non-loopback or port-50000 exposure, controller executors, enabled jobs, host-key bypass, plaintext key/token patterns, rootful Docker, sudo, prune, wildcard deletion, and unbounded cleanup.

@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [pipeline, verify, resolveDigest, publicImages, gate, localDeploy, promote, docs, checks,
+const [pipeline, verify, resolveDigest, pullHelper, publicImages, gate, localDeploy, promote, docs, checks,
   jobDsl] = await Promise.all([
   readFile(new URL('../Jenkinsfile', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/verify-candidate.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/resolve-public-ghcr-digest.sh', import.meta.url), 'utf8'),
+  readFile(new URL('../ops/jenkins/pull-public-images.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/public-source-images.env', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/resource-gate.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/deploy-local.sh', import.meta.url), 'utf8'),
@@ -80,15 +81,16 @@ test('public registries use no login, a blank Docker config, re-resolution, and 
   assert.match(localDeploy, /mktemp -d .*docker-public/);
   assert.match(localDeploy, /printf '\{\}\\n' > "\$DOCKER_CONFIG\/config[.]json"/);
   assert.match(localDeploy, /unset DOCKER_AUTH_CONFIG REGISTRY_AUTH_FILE/);
-  assert.match(localDeploy, /resolve-public-ghcr-digest[.]sh/);
+  assert.match(localDeploy, /pull-public-images[.]sh/);
   assert.match(localDeploy, /trap cleanup EXIT/);
-  assert.match(localDeploy, /docker pull "\$repository@\$digest"/);
-  assert.match(localDeploy, /docker pull "\$gateway_image"/);
-  assert.doesNotMatch(localDeploy, /docker login|GHCR_(?:USER|TOKEN)|GH_API_TOKEN/);
+  assert.match(pullHelper, /resolve-public-ghcr-digest[.]sh/);
+  assert.match(pullHelper, /docker pull "\$repository@\$digest"/);
+  assert.match(pullHelper, /docker pull "\$gateway_image"/);
+  assert.doesNotMatch(`${localDeploy}\n${pullHelper}`, /docker login|GHCR_(?:USER|TOKEN)|GH_API_TOKEN/);
   assert.match(promote, /expected_version=\$\(printf '\{"sha":"%s"\}' "\$sha"\)/);
   assert.match(localDeploy, /deploy\/promote[.]sh/);
-  assert.doesNotMatch(`${pipeline}\n${verify}\n${gate}\n${localDeploy}\n${docs}`, /ACR_|aliyuncs/i);
-  assert.doesNotMatch(localDeploy, /GITHUB_TOKEN/);
+  assert.doesNotMatch(`${pipeline}\n${verify}\n${gate}\n${localDeploy}\n${pullHelper}\n${docs}`, /ACR_|aliyuncs/i);
+  assert.doesNotMatch(`${localDeploy}\n${pullHelper}`, /GITHUB_TOKEN/);
 });
 
 test('same-host executor and resource stop gates match the operations budget', () => {
