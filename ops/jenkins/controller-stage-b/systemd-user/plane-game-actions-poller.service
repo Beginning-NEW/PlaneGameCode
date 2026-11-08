@@ -2,10 +2,10 @@
 Description=PlaneGame bounded public Actions poller (disabled package)
 After=network-online.target
 Wants=network-online.target
-ConditionPathIsRegular=%h/.local/state/plane-game-poller/jenkins-api-token
-ConditionPathIsRegular=%h/.local/state/plane-game-poller/journal.ndjson
-ConditionPathIsRegular=%h/.local/state/plane-game-poller/snapshot.json
-ConditionPathIsRegular=%h/.local/state/plane-game-poller/.shared.lock
+ConditionPathExists=%h/.local/state/plane-game-poller/jenkins-api-token
+ConditionPathExists=%h/.local/state/plane-game-poller/journal.ndjson
+ConditionPathExists=%h/.local/state/plane-game-poller/snapshot.json
+ConditionPathExists=%h/.local/state/plane-game-poller/.shared.lock
 
 [Service]
 Type=oneshot

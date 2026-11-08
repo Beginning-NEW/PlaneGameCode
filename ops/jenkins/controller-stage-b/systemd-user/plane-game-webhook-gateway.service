@@ -2,8 +2,8 @@
 Description=PlaneGame Stage B rootless webhook admission gateway
 After=network-online.target
 Wants=network-online.target
-ConditionPathIsRegular=%h/.config/plane-game/credentials/webhook-secret
-ConditionPathIsRegular=%h/.config/plane-game/credentials/jenkins-api-token
+ConditionPathExists=%h/.config/plane-game/credentials/webhook-secret
+ConditionPathExists=%h/.config/plane-game/credentials/jenkins-api-token
 
 [Service]
 Type=simple

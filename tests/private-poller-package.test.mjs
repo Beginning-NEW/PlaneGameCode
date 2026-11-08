@@ -48,6 +48,13 @@ test('poller package is disabled, five-minute bounded, and mutually exclusive wi
     assert.match(unit, /UnsetEnvironment=.*HTTP_PROXY.*http_proxy.*NODE_OPTIONS.*NODE_USE_ENV_PROXY/);
   }
   assert.match(service, /PLANE_POLLER_JENKINS_CREDENTIAL_FILE=%h\/.local\/state\/plane-game-poller\/jenkins-api-token/);
+  for (const name of ['jenkins-api-token', 'journal.ndjson', 'snapshot.json', '.shared.lock']) {
+    assert.ok(service.split('\n').includes(`ConditionPathExists=%h/.local/state/plane-game-poller/${name}`));
+  }
+  for (const name of ['webhook-secret', 'jenkins-api-token']) {
+    assert.ok(webhookService.split('\n').includes(`ConditionPathExists=%h/.config/plane-game/credentials/${name}`));
+  }
+  assert.doesNotMatch(service + webhookService, /ConditionPathIsRegular/);
   assert.match(timer, /OnBootSec=5min[\s\S]*OnUnitActiveSec=5min/);
   assert.doesNotMatch(service, /^\[Install\]|^WantedBy=/m);
   assert.match(timer, /^\[Install\]\nWantedBy=timers[.]target$/m);
