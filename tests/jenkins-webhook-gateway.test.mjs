@@ -20,7 +20,8 @@ const actions = [{
   ],
 }];
 
-test('gateway token consumer reads one complete atomic generation', () => {
+// The target gateway uses POSIX ownership/mode checks and intentionally refuses Windows files.
+test('gateway token consumer reads one complete atomic generation', { skip: process.platform === 'win32' }, () => {
   const directory = mkdtempSync(join(tmpdir(), 'plane-gateway-token-'));
   const path = join(directory, 'jenkins-api-token');
   const uuid = '123e4567-e89b-42d3-a456-426614174000';
