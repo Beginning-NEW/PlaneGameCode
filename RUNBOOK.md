@@ -28,7 +28,7 @@ GitHub Actions 是 PR/main 重型 CI 和受保护 `main` 的唯一 GHCR 发布�
 - 既有服务健康、延迟和 IO 无回归，候选回环端口仍空闲；
 - Aegis/替代安全基线和 rootless Docker 风险有已批准结论。
 
-建议 controller 为 0 executors，systemd/cgroup 上限 `MemoryMax=1024MiB`、`CPUQuota=50%`；单一 `plane-game-cd-rootless` agent 使用独立 `plane-preflight` 用户，上限 `MemoryMax=384MiB`、`CPUQuota=25%`。agent 不得属于 docker/sudo/wheel/admin 组，只能访问其自身 `/run/user/<uid>/docker.sock`；controller 不得访问任何 Docker socket 或部署凭据。
+建议 controller 为 0 executors，systemd/cgroup 上限 `MemoryMax=1024MiB`、`CPUQuota=50%`；单一 `plane-game-cd-rootless` agent 使用独立 `plane-preflight` 用户，上限 `MemoryMax=384MiB`、`CPUQuota=25%`。agent 不得属于 docker/sudo/wheel/admin 组，只能访问其自身 `/run/user/<uid>/docker.sock`；controller 不得访问任何 Docker socket 或部署凭据。测试服务器现有的固定报告通道是唯一例外：只允许 root、`NOPASSWD`、规范路径 `/usr/local/sbin/plane-game-preflight-report` 和 sudoers 无参数标记 `""`。门禁同时校验路径组件、文件模式与受审 SHA-256；这不构成通用 sudo 权限，任何额外命令、参数、run-as、别名扩展、`ALL`、通配符、`SETENV` 或不可解析输出都必须失败。
 
 `ops/jenkins/resource-gate.sh` 在每次 CD 前后校验执行器身份、rootless preflight、瞬时 `MemAvailable >= 3.5 GiB`、磁盘 `>= 35 GiB` 和执行器 cgroup 上限。以下任一条件出现即停止试运行、禁用 job 并由 Operations 评估；不得自动重试：
 
@@ -36,6 +36,8 @@ GitHub Actions 是 PR/main 重型 CI 和受保护 `main` 的唯一 GHCR 发布�
 - OOM/进程被杀、根盘可用 `< 30 GiB`；
 - 既有 MSSQL/Postgres/Redis/new-api 的健康、延迟、CPU/IO 有回归；
 - rootless socket、回环端口、Aegis/替代安全基线或凭据边界不再成立。
+
+The fixed-report admission code runs under `/usr/bin/python3 -I`, ignores inherited Python search paths, and rejects any matching sudo Defaults outside the reviewed non-widening set (`env_reset`, `mail_badpass`, the single independently observed target `secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin`, and optional `use_pty`). Any changed, reordered, missing, or additional path entry, plus `setenv`, `!env_reset`, `env_keep`, unknown Defaults, and malformed output, remains an immediate No-Go condition. This remains limited to the existing test-server preflight report contract and is not a general sudo allowance.
 
 ## Jenkins public-source identity and permissions
 

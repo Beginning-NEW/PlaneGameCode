@@ -2,14 +2,16 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [pipeline, verify, resolveDigest, pullHelper, publicImages, gate, localDeploy, promote, docs, checks,
-  jobDsl] = await Promise.all([
+const [pipeline, verify, resolveDigest, pullHelper, publicImages, gate, preflight, sudoPolicy, localDeploy,
+  promote, docs, checks, jobDsl] = await Promise.all([
   readFile(new URL('../Jenkinsfile', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/verify-candidate.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/resolve-public-ghcr-digest.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/pull-public-images.sh', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/public-source-images.env', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/resource-gate.sh', import.meta.url), 'utf8'),
+  readFile(new URL('../deploy/plane-preflight', import.meta.url), 'utf8'),
+  readFile(new URL('../deploy/preflight_sudo_policy.py', import.meta.url), 'utf8'),
   readFile(new URL('../ops/jenkins/deploy-local.sh', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/promote.sh', import.meta.url), 'utf8'),
   readFile(new URL('../RUNBOOK.md', import.meta.url), 'utf8'),
@@ -111,6 +113,12 @@ test('same-host executor and resource stop gates match the operations budget', (
   assert.match(gate, /minimum_disk_kib=36700160/);
   assert.match(gate, /memory_max.*402653184/);
   assert.match(gate, /cpu_period \* 25/);
+  assert.match(preflight, /\/usr\/bin\/python3 -I "\$script_dir\/preflight_sudo_policy[.]py"/);
+  assert.doesNotMatch(preflight, /command -v sudo|PATH=/);
+  assert.match(sudoPolicy, /SUDO_BINARY = "\/usr\/bin\/sudo"/);
+  assert.match(sudoPolicy, /\[SUDO_BINARY, "-n", "-l"\]/);
+  assert.match(sudoPolicy, /REPORT_PATH = "\/usr\/local\/sbin\/plane-game-preflight-report"/);
+  assert.match(sudoPolicy, /EXPECTED_COMMAND = f'\(root\) NOPASSWD: \{REPORT_PATH\} ""'/);
   const preGate = localDeploy.indexOf('bash ops/jenkins/resource-gate.sh');
   const promoter = localDeploy.indexOf('bash "$stage/deploy/promote.sh"');
   assert.ok(preGate >= 0 && preGate < promoter);

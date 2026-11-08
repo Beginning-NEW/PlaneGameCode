@@ -58,12 +58,65 @@ A first valid delivery is reserved as `dispatching`, then durably moved to non-r
 
 - `verify-candidate.sh` treats webhook parameters as untrusted and calls the public exact-attempt and main-ref APIs without authentication. It validates repository/head repository, workflow name/path, push/main, exact SHA, run id/attempt/number, completed/success, and protected-main immobility before deriving the application digest from the public GHCR full-SHA tag.
 - `webhook-admission.mjs` owns HMAC validation, exact event filtering, and the persistent `dispatching`/`submitted`/`queued`/`running`/`completed` state machine. `webhook-gateway.mjs` validates `Location`, owns queue/build reconciliation, and is the only component allowed to call `buildWithParameters`.
-- `Jenkinsfile` accepts only `JOB_NAME=plane-game/main-cd` and requires the global `CD_TRIGGER_MODE` to equal exactly one mutually exclusive `TRIGGER_SOURCE`. Poller mode requires an empty webhook UUID and deterministic `TRIGGER_ID=SHA:run_id:run_attempt`; webhook mode requires `TRIGGER_ID=webhook:UUID`. The versioned pipeline fixes `DEPLOY_PORT=18081`, exposes no port parameter, and both deployment entrypoints reject every other value.
-- `resource-gate.sh` enforces the restricted `plane-preflight` executor, rootless Docker, 3.5 GiB current memory admission, 35 GiB disk admission, and the 384 MiB/25% agent cgroup caps.
-- `deploy-local.sh` durably records poller `deploy_intent` before pull, creates source from the verified Git object, uses an empty temporary Docker config, unsets inherited auth, resolves the public full-SHA tag a second time, and pulls only by digest. The promoter records rollback intent before recovery, while the post-CD resource check remains inside the rollback trap. Exact runtime labels and release records carry the full tuple and digest; ambiguous ownership is preserved and quarantined.
+- `Jenkinsfile` accepts only the core Jenkins identity `JOB_NAME=plane-game/main-cd`; a plain `pipelineJob` does not provide Multibranch's `BRANCH_NAME`. It also requires the global `CD_TRIGGER_MODE` to equal exactly one mutually exclusive `TRIGGER_SOURCE`. Poller mode requires an empty webhook UUID and deterministic `TRIGGER_ID=SHA:run_id:run_attempt`; webhook mode requires `TRIGGER_ID=webhook:UUID`. The versioned pipeline fixes `DEPLOY_PORT=18081`, exposes no port parameter, and both deployment entrypoints reject every other value.
+- `resource-gate.sh` enforces the restricted `plane-preflight` executor, rootless Docker, 3.5 GiB current memory admission, 35 GiB disk admission, and the 384 MiB/25% agent cgroup caps. Its sole sudo exception is the existing test-server contract `(root) NOPASSWD: /usr/local/sbin/plane-game-preflight-report ""`. `deploy/plane-preflight` invokes the policy with `/usr/bin/python3 -I`; `deploy/preflight_sudo_policy.py` uses `/usr/bin/sudo` directly, accepts only that one normalized effective command plus the reviewed non-widening Defaults (`env_reset`, `mail_badpass`, the exact target `secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin`, and optional `use_pty`), and verifies the canonical root-owned, non-writable, regular non-symlink mode-0755 report against the reviewed SHA-256. This is not a general sudo allowance: inherited Python paths, a changed/missing/reordered/additional secure-path entry, environment-widening or unknown Defaults, any other run-as identity, argument, command, alias expansion, wildcard, `ALL`, `SETENV`, extra entry, changed file, or unparseable output are stop conditions.
+- `deploy-local.sh` durably records poller `deploy_intent` before pull, creates source from the verified Git object, creates an empty temporary Docker config, unsets inherited auth configuration, resolves the public full-SHA tag again, and anonymously pulls the application and reviewed gateway only by digest. `pre-promote-check.sh` repeats the public API, tag digest, and SCM main checks immediately before promotion. The promoter records rollback intent before recovery and runs the candidate-owned `resource-gate.sh` before releasing the rollback trap, so a failure restores the prior healthy release and ordering markers. Exact runtime labels and release records carry the full tuple and digest. On a first release, cleanup occurs only after deployment IDs and ownership labels match; missing or ambiguous ownership is preserved for investigation and quarantine, with incomplete recovery reported as `ALERT` and `recovery=revert_incomplete`.
 - `config/plane-game-job.groovy` deliberately has no webhook trigger. Direct GitHub-to-Jenkins webhook configuration is a rollback condition.
 - `webhook-contract-dry-run.mjs` performs an offline HMAC, admission, persistence, and duplicate-delivery contract check without printing the payload or key. Run `node ops/jenkins/webhook-contract-dry-run.mjs`.
 
 The bounded private poller request graph, state machines, test-only approval exception, credential format, initialization boundary, and same-service-UID replay residual are documented in [`PRIVATE-POLLER.md`](PRIVATE-POLLER.md).
 
 The Jenkins controller must have zero executors and no Docker or deployment credential access. The job must use `disableConcurrentBuilds`, the explicit `plane-game-production-cd` lock, and the host `flock`. Do not add build, test, Playwright, image push, SSH, ACR, DNS, Nginx, or certificate operations here.
+
+## Operations rerun evidence for the fixed report exception
+
+After Security, QA, and CTO approve one exact candidate SHA, Operations may rerun the same transient user-scope admission invocation below from that exact checkout. It is read-only apart from its run-owned evidence directory and the transient scope. It does not edit sudoers, the report, SSH, Jenkins, Docker, systemd configuration, or any host service. A repository test pass is not target approval.
+
+```bash
+set -u
+test "$(id -un)" = plane-preflight
+test -z "$(git status --porcelain --untracked-files=no)"
+evidence_dir=$(mktemp -d "${TMPDIR:-/tmp}/plane-stage-b-gate.XXXXXX")
+started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+candidate_sha=$(git rev-parse --verify HEAD)
+candidate_tree=$(git rev-parse --verify HEAD^{tree})
+{
+  printf 'started_utc=%s\n' "$started_utc"
+  printf 'candidate_sha=%s\n' "$candidate_sha"
+  printf 'candidate_tree=%s\n' "$candidate_tree"
+  sha256sum deploy/plane-preflight deploy/preflight_sudo_policy.py \
+    ops/jenkins/resource-gate.sh ops/jenkins/public-source-images.env \
+    ops/jenkins/config/jenkins-loopback-contract.env
+  readlink -e /usr/local/sbin/plane-game-preflight-report
+  stat -c 'report=%F uid=%u gid=%g mode=%a size=%s mtime=%y device=%d inode=%i' \
+    /usr/local/sbin/plane-game-preflight-report
+  sha256sum /usr/local/sbin/plane-game-preflight-report
+} >"$evidence_dir/identity.txt"
+set +e
+systemd-run --user --scope --quiet -p MemoryMax=384M -p CPUQuota=25% bash -s \
+  >"$evidence_dir/stdout.txt" 2>"$evidence_dir/stderr.txt" <<'STAGE_B_GATE'
+set -euo pipefail
+bash ops/jenkins/resource-gate.sh
+STAGE_B_GATE
+gate_exit=$?
+set -e
+finished_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+{
+  printf 'finished_utc=%s\n' "$finished_utc"
+  printf 'exit_code=%s\n' "$gate_exit"
+  printf 'host_mutation=none; transient_scope_and_evidence_files_only\n'
+  printf '%s  %s\n' "$(sha256sum "$evidence_dir/stdout.txt" | awk '{print $1}')" stdout.txt
+  printf '%s  %s\n' "$(sha256sum "$evidence_dir/stderr.txt" | awk '{print $1}')" stderr.txt
+} >"$evidence_dir/result.txt"
+cat "$evidence_dir/identity.txt"
+printf '%s\n' '--- stdout ---'
+cat "$evidence_dir/stdout.txt"
+printf '%s\n' '--- stderr ---' >&2
+cat "$evidence_dir/stderr.txt" >&2
+cat "$evidence_dir/result.txt"
+test "$gate_exit" -eq 0
+grep -E '^resource-gate: passed .*memory_max=402653184 cpu_max=25000/100000$' \
+  "$evidence_dir/stdout.txt"
+```
+
+Retain `identity.txt`, `stdout.txt`, `stderr.txt`, and `result.txt` together with the UTC window and exact candidate SHA. The final `resource-gate: passed` line proves that the gate continued past the sudo exception through both `memory.max` and `cpu.max`. Any mismatch or nonzero exit remains `No-Go`; do not repair the host from this procedure.
