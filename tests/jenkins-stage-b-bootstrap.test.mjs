@@ -57,7 +57,10 @@ test('public-source SCM, Actions, and registries require no credential objects o
   const files = manifest.credentials.flatMap((entry) => entry.hostFiles);
   assert.equal(new Set(files).size, files.length);
   for (const source of manifest.credentials.flatMap((entry) => entry.secretSources)) {
-    assert.ok(casc.includes(`\${trim:\${readFile:${source}}}`), source);
+    const interpolation = source.endsWith('/PLANE_AGENT_PRIVATE_KEY')
+      ? `\${readFile:${source}}`
+      : `\${trim:\${readFile:${source}}}`;
+    assert.ok(casc.includes(interpolation), source);
   }
   assert.doesNotMatch(casc, /scope: GLOBAL|PLANE_(?:GITHUB|GHCR)_/);
   assert.doesNotMatch(job, /credentials\(/);

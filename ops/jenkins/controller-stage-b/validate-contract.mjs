@@ -81,6 +81,8 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   }
   requireMatch(casc, /scope: SYSTEM/, 'agent credential must be SYSTEM scoped');
   requireMatch(casc, /privateKeySource:\s*directEntry:/, 'JCasC SSH private-key source must use directEntry');
+  requireMatch(casc, /privateKey: "\$\{readFile:\/run\/secrets\/PLANE_AGENT_PRIVATE_KEY\}"/,
+    'SSH private key must be read as raw PEM bytes');
   requireMatch(casc, /manuallyProvidedKeyVerificationStrategy:/, 'fixed host-key verifier missing');
   requireMatch(casc, /sshHostKeyVerificationStrategy:/, 'SSH launcher host-key field is missing');
   requireMatch(casc, /key: "CD_TRIGGER_MODE"[\s\S]*PLANE_CD_TRIGGER_MODE/,
@@ -97,7 +99,6 @@ export function assertStageBContract({ runtime, dockerfile, casc, job, gateway, 
   for (const source of [
     'PLANE_AGENT_HOST',
     'PLANE_AGENT_ED25519_HOST_KEY',
-    'PLANE_AGENT_PRIVATE_KEY',
     'PLANE_CD_TRIGGER_MODE',
   ]) {
     if (!casc.includes(`\${trim:\${readFile:/run/secrets/${source}}}`)) {
