@@ -58,6 +58,26 @@ install -m 0600 /dev/null "$HOME/.local/state/plane-game-poller/jenkins-api-toke
 
 The poller oneshot is bounded by `MemoryMax=256M`, `CPUQuota=25%`, `TasksMax=64`, and the effective oneshot execution limit `TimeoutStartSec=4min`, safely below the five-minute cadence. (`RuntimeMaxSec` does not apply to `Type=oneshot`, so the unit does not claim it as a control.) Unit-local journal output is rate-limited to 30 messages per minute; the ledger procedure above bounds package-owned persistent audit storage.
 
+## Host user-namespace prerequisite
+
+The installed unit hardens the oneshot with `ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`, `ProtectKernelTunables=true`, and `ProtectControlGroups=true`. When the user manager runs unprivileged, any one of those directives makes systemd launch the service inside a user namespace that maps only the service UID (`/proc/self/uid_map` shows a single `UID UID 1` line). Inside that namespace the host `root` owner is unmapped and is reported as `65534`, so the credential provider's ancestor check on `/` and `/home` (owner must be the service UID or `0`) rejects an otherwise valid `0600` credential file and the run fails with `credential_unavailable` before any GitHub call.
+
+This is a host capability property, not a defect in the credential file, and it cannot be satisfied by fixing modes or ownership. On such hosts Operations must install a local compatibility drop-in that disables exactly those five directives for the poller service before activation:
+
+```ini
+# ~/.config/systemd/user/plane-game-actions-poller.service.d/99-host-capability-compat.conf
+[Service]
+ProtectKernelModules=false
+ProtectSystem=false
+ProtectHome=false
+ReadWritePaths=
+PrivateTmp=false
+ProtectKernelTunables=false
+ProtectControlGroups=false
+```
+
+`systemctl --user daemon-reload` after writing the file. The drop-in is host state and is intentionally not shipped in the disabled package. Verify the effect inside the real unit (not in an interactive shell) before trusting the poller: `/proc/self/uid_map` must not be a single-line mapping, and `lstat('/')` / `lstat('/home')` must report owner `0`. Removing the drop-in restores the hardened unit and re-breaks the credential path, so it belongs in the host's documented rollback list.
+
 ## Persistent poller activation gate
 
 The timer now has an explicit `WantedBy=timers.target` install target, but the repository and installed service still default to `CD_TRIGGER_MODE=disabled`. The opt-in drop-in under `controller-stage-b/systemd-user-activation/` is deliberately outside the default unit directory. Merely starting the timer or supplying a one-shot environment value is not an activation procedure.
