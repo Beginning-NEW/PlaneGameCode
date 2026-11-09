@@ -58,7 +58,7 @@ credentials:
               username: "plane-preflight"
               privateKeySource:
                 directEntry:
-                  privateKey: "${trim:${readFile:/run/secrets/PLANE_AGENT_PRIVATE_KEY}}"
+                  privateKey: "${readFile:/run/secrets/PLANE_AGENT_PRIVATE_KEY}"
 jobs:
   - file: /usr/share/jenkins/ref/jobs/plane-game-job.groovy
 unclassified:
