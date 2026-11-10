@@ -155,7 +155,10 @@ export class JenkinsPollerClient {
       throw jenkinsError('jenkins_outcome_unknown', error?.message);
     }
     if (response.status >= 300 && response.status < 400) throw jenkinsError('jenkins_redirect_rejected');
-    if (!response.headers.get('x-jenkins') || !response.headers.get('x-hudson')) {
+    // Jenkins 2.5xx only emits the legacy X-Hudson header on error pages, so the
+    // authenticated success path proves its identity with X-Jenkins alone.
+    const jenkinsVersion = response.headers.get('x-jenkins');
+    if (!jenkinsVersion || !/^[0-9]+(?:[.][0-9]+)*$/.test(jenkinsVersion)) {
       throw jenkinsError('jenkins_identity_missing');
     }
     const body = await boundedText(response);
