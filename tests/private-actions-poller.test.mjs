@@ -286,6 +286,29 @@ test('attempt 2 accepts its own approval and deployment while retaining attempt 
   assert.equal(evidence.deployment.id, '7002');
 });
 
+test('candidate validation tolerates duplicated adjacent deployment states', async (t) => {
+  const { ledger } = await ledgerFixture(t);
+  ledger.recordRequest();
+  ledger.admitCandidate(TRIGGER_ID, 58);
+  const statuses = deploymentStatuses();
+  const duplicated = [
+    statuses[0],
+    statuses[1],
+    deploymentStatus({ id: 8005, state: 'queued', created_at: '2026-11-08T23:55:01Z' }),
+    statuses[2],
+    statuses[3],
+    deploymentStatus({ id: 8006, state: 'waiting', created_at: '2026-11-08T23:54:02Z' }),
+  ];
+  const client = new PublicGitHubClient({
+    ledger,
+    reservationId: TRIGGER_ID,
+    fetchImpl: sequenceFetch(validationResponses({ statuses: duplicated })),
+    now: () => NOW,
+  });
+  const evidence = await validateCandidate(client, { sha: SHA, runId: RUN_ID, runAttempt: ATTEMPT });
+  assert.equal(evidence.deployment.status.state, 'success');
+});
+
 for (const [name, overrides, code] of [
   ['empty approvals', { approvals: [] }, 'approval_history_rejected'],
   ['unapproved reviewer', { approvals: [approval({ user: { login: 'other', id: 2 } })] }, 'approval_reviewer_rejected'],
