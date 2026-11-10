@@ -109,8 +109,15 @@ function validateDeploymentStatus(statuses, deployment, window) {
     throw candidateError('deployment_status_rejected');
   }
   const chronological = [...statuses].reverse();
-  const states = chronological.map((status) => status.state);
-  const times = chronological.map((status) => withinAttempt(status.created_at, window));
+  // GitHub emits adjacent duplicate states on some runs (two `waiting` at
+  // creation, two `queued` around the approval), so collapse runs of the same state.
+  const states = [];
+  const times = [];
+  for (const status of chronological) {
+    if (states.length > 0 && states[states.length - 1] === status.state) continue;
+    states.push(status.state);
+    times.push(withinAttempt(status.created_at, window));
+  }
   if (!['waiting,in_progress,success', 'waiting,queued,in_progress,success'].includes(states.join(',')) ||
       times.some((time, index) => index > 0 && time < times[index - 1])) {
     throw candidateError('deployment_status_rejected');
