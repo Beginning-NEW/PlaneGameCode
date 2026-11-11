@@ -43,6 +43,8 @@ jobs:
           test "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy
           port=$(docker port "$cid" 8080/tcp | sed 's/.*://')
           curl --fail --show-error "http://127.0.0.1:${port}/healthz"
+          curl --fail --show-error "http://127.0.0.1:${port}/" | grep -qi '<html'
+          curl --fail --show-error "http://127.0.0.1:${port}/version.json" | grep -q "\"sha\":\"${GITHUB_SHA}\""
   publish:
     name: Publish protected-main candidate
     environment: production
