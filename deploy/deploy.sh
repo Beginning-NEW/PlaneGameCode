@@ -109,9 +109,12 @@ gateway_owned_by_run() {
   [[ "$actual" == "$id $deployment_id plane-game gateway" ]]
 }
 
+# Docker can print abbreviated ids from `ps`/`network ls` (Docker 29 does), while
+# `inspect` always reports the full id, so every ownership comparison needs
+# --no-trunc output on both sides.
 gateway_container_for_run() {
   local ids id found=''
-  ids=$(docker ps -aq \
+  ids=$(docker ps -aq --no-trunc \
     --filter 'label=com.docker.compose.project=plane-game' \
     --filter 'label=com.docker.compose.service=gateway' \
     --filter "label=com.plane-game.deployment-id=$deployment_id") || return 1
@@ -126,7 +129,7 @@ gateway_container_for_run() {
 
 candidate_container_for_run() {
   local ids id found='' actual actual_id actual_deployment actual_sha actual_digest
-  ids=$(docker ps -aq \
+  ids=$(docker ps -aq --no-trunc \
     --filter "label=com.plane-game.deployment-id=$deployment_id" \
     --filter "label=com.plane-game.release-sha=$RELEASE_SHA") || return 1
   while IFS= read -r id; do
@@ -148,7 +151,7 @@ candidate_container_for_run() {
 
 network_for_run() {
   local ids id found=''
-  ids=$(docker network ls -q --filter "label=com.plane-game.deployment-id=$deployment_id") || return 1
+  ids=$(docker network ls -q --no-trunc --filter "label=com.plane-game.deployment-id=$deployment_id") || return 1
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
     network_owned_by_run "$id" || continue
