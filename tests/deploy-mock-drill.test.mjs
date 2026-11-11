@@ -255,3 +255,25 @@ test('mock Docker digest mismatch preserves the ambiguous candidate and network 
     await fixture.cleanup();
   }
 });
+
+test('write_route keeps the bind-mounted route readable under a restrictive umask', { skip: !bashIsAvailable() || process.platform === 'win32' }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'plane-game-route-perms-'));
+  try {
+    const result = spawnSync(
+      bashExecutable,
+      [
+        '-c',
+        'umask 077; export PLANE_GAME_RUNTIME_DIR="$1"; source "$2"; write_route "$3"; stat -c %a "$ACTIVE_DIR"; stat -c %a "$ACTIVE_UPSTREAM"',
+        'route-perms',
+        root,
+        join(repositoryRoot, 'deploy', 'common.sh'),
+        releaseSha,
+      ],
+      { cwd: root, encoding: 'utf8' },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.stdout.trim().split('\n'), ['755', '644']);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

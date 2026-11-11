@@ -115,12 +115,22 @@ read_route_sha() {
   printf '%s\n' "${BASH_REMATCH[1]}"
 }
 
+# The gateway runs nginxinc/nginx-unprivileged (uid 101) with this directory
+# bind-mounted read-only, so the route must stay world-readable whatever umask
+# the deployment caller happens to run with.
+publish_route() {
+  chmod 0755 "$ACTIVE_DIR"
+  [[ ! -f "$ACTIVE_UPSTREAM" ]] || chmod 0644 "$ACTIVE_UPSTREAM"
+}
+
 write_route() {
   local sha="$1" temp
   mkdir -p "$ACTIVE_DIR"
   temp=$(mktemp "$ACTIVE_DIR/.upstream.XXXXXX")
   printf 'set $backend http://plane-game-%s:8080;\n' "$sha" > "$temp"
+  chmod 0644 "$temp"
   mv -f "$temp" "$ACTIVE_UPSTREAM"
+  publish_route
 }
 
 snapshot_deployment_state() {
@@ -148,6 +158,7 @@ restore_snapshot_route() {
   if [[ "$(snapshot_value route_present)" == true ]]; then
     mkdir -p "$ACTIVE_DIR"
     cp "$SNAPSHOT_DIR/upstream.inc" "$ACTIVE_UPSTREAM"
+    publish_route
   else
     rm -f "$ACTIVE_UPSTREAM"
   fi
