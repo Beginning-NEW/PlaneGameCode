@@ -446,8 +446,12 @@ export class SecureLedger {
         throw ledgerError('rate_headers_invalid');
       }
       if (state.rate && resetMs < state.rate.resetMs && remaining > state.rate.remaining) {
-        state.clock.backoffUntilMs = Math.max(state.clock.backoffUntilMs, state.rate.resetMs);
-        throw ledgerError('rate_headers_inconsistent');
+        // An earlier reset with more remaining can only be a sample from an older
+        // window: GitHub serves the unauthenticated quota from a pool shared with
+        // every other client behind the same egress address, and individual edge
+        // nodes lag behind after a window rolls over. Keep the recorded window
+        // instead of failing a candidate that was already admitted.
+        return clone(state.rate);
       }
       state.rate = { limit, remaining, resetMs, observedAtMs: nowMs };
       return clone(state.rate);
