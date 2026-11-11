@@ -309,6 +309,26 @@ test('candidate validation tolerates duplicated adjacent deployment states', asy
   assert.equal(evidence.deployment.status.state, 'success');
 });
 
+test('candidate validation accepts a terminal status written just after run updated_at', async (t) => {
+  // Real GitHub runs record the terminal deployment status a second after the
+  // run's updated_at, which must stay inside the attempt evidence window.
+  const { ledger } = await ledgerFixture(t);
+  ledger.recordRequest();
+  ledger.admitCandidate(TRIGGER_ID, 58);
+  const statuses = [
+    deploymentStatus({ created_at: '2026-11-08T23:58:01Z' }),
+    ...deploymentStatuses().slice(1),
+  ];
+  const client = new PublicGitHubClient({
+    ledger,
+    reservationId: TRIGGER_ID,
+    fetchImpl: sequenceFetch(validationResponses({ statuses })),
+    now: () => NOW,
+  });
+  const evidence = await validateCandidate(client, { sha: SHA, runId: RUN_ID, runAttempt: ATTEMPT });
+  assert.equal(evidence.deployment.status.state, 'success');
+});
+
 for (const [name, overrides, code] of [
   ['empty approvals', { approvals: [] }, 'approval_history_rejected'],
   ['unapproved reviewer', { approvals: [approval({ user: { login: 'other', id: 2 } })] }, 'approval_reviewer_rejected'],
@@ -330,7 +350,7 @@ for (const [name, overrides, code] of [
   ['failed deployment status', { statuses: [deploymentStatus({ state: 'failure' })] }, 'deployment_status_rejected'],
   ['missing waiting status', { statuses: deploymentStatuses().slice(0, 3) }, 'deployment_status_rejected'],
   ['missing in-progress status', { statuses: deploymentStatuses().filter((status) => status.state !== 'in_progress') }, 'deployment_status_rejected'],
-  ['status outside attempt window', { statuses: [deploymentStatus({ created_at: '2026-11-09T00:00:00Z' }), ...deploymentStatuses().slice(1)] }, 'deployment_status_rejected'],
+  ['status outside attempt window', { statuses: [deploymentStatus({ created_at: '2026-11-09T00:10:00Z' }), ...deploymentStatuses().slice(1)] }, 'deployment_status_rejected'],
   ['status for another deployment', { statuses: [deploymentStatus({ deployment_url: 'https://api.github.com/repos/Beginning-NEW/PlaneGameCode/deployments/7002' }), ...deploymentStatuses().slice(1)] }, 'deployment_status_rejected'],
   ['moved main', { main: { ref: 'refs/heads/main', object: { type: 'commit', sha: '7'.repeat(40) } } }, 'main_moved'],
 ]) {
