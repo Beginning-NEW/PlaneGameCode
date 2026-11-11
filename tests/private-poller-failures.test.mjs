@@ -153,8 +153,8 @@ test('Jenkins credentials reject writable or symlinked ancestor components befor
 
 for (const [name, response, code] of [
   ['permission denial', new Response('denied', { status: 403, headers: { 'x-jenkins': '2', 'x-hudson': '1', 'content-type': 'text/plain' } }), 'jenkins_rejected'],
-  ['missing Jenkins identity', new Response('', { status: 201, headers: { location: '/queue/item/1/' } }), 'jenkins_identity_missing'],
-  ['malformed Jenkins version identity', new Response('', { status: 201, headers: { 'x-jenkins': 'not-a-version', location: '/queue/item/1/' } }), 'jenkins_identity_missing'],
+  ['missing Jenkins identity', new Response('', { status: 201, headers: { location: '/login' } }), 'jenkins_identity_missing'],
+  ['malformed Jenkins version identity', new Response('', { status: 201, headers: { 'x-jenkins': 'not-a-version', location: '/login' } }), 'jenkins_identity_missing'],
   ['non-loopback Location', new Response('', { status: 201, headers: { 'x-jenkins': '2', 'x-hudson': '1', location: 'http://example.test/queue/item/1/' } }), 'jenkins_queue_location_invalid'],
   ['malformed Location', new Response('', { status: 201, headers: { 'x-jenkins': '2', 'x-hudson': '1', location: '/queue/not-an-item/' } }), 'jenkins_queue_location_invalid'],
   ['unexpected body type', new Response('{}', { status: 201, headers: { 'x-jenkins': '2', 'x-hudson': '1', location: '/queue/item/1/', 'content-type': 'application/json' } }), 'jenkins_content_type_rejected'],
@@ -180,6 +180,20 @@ test('Jenkins success identity accepts X-Jenkins without the legacy X-Hudson hea
   assert.deepEqual(await client.enqueue(candidate), {
     queueId: '17',
     queueUrl: 'http://127.0.0.1:18080/queue/item/17/',
+  });
+});
+
+test('Jenkins bare 201 queue creation is accepted as identity evidence', async () => {
+  const client = new JenkinsPollerClient({
+    credentialProvider: { get: () => ({ username: 'plane-actions-poller', token: 'N'.repeat(32) }) },
+    fetchImpl: async () => new Response('', {
+      status: 201,
+      headers: { location: 'http://127.0.0.1:18080/queue/item/5/' },
+    }),
+  });
+  assert.deepEqual(await client.enqueue(candidate), {
+    queueId: '5',
+    queueUrl: 'http://127.0.0.1:18080/queue/item/5/',
   });
 });
 
