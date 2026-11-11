@@ -111,3 +111,20 @@ bash ops/jenkins/controller-stage-b/manage-actions-poller.sh verify-disabled-res
 `deactivate` is idempotent and does not depend on a complete activation ledger. It stops/disables both poller units first, removes the drop-in, persists `disabled`, applies the fixed live Jenkins script that disables the job and global selector, and fails unless systemd and both selector layers agree. `verify-disabled-restart` requires a changed boot ID and repeats the timer/service, persisted selector, live selector, and disabled-job proof before writing `deactivation-restart-proof`. A rollback is not post-reboot complete without that proof.
 
 The self-owned ledger detects accidental corruption and other-UID/path attacks. Malicious replay of an earlier internally consistent journal/snapshot by the same service UID remains explicitly out of scope; preventing it requires a separately trusted root-owned or remote monotonic anchor.
+
+## SSH agent launch recovery (2026-11-11 incident)
+
+Two independent host-side faults were observed while validating a real candidate:
+
+1. `slave.log` showed `java.io.IOException: Could not copy remoting.jar`, caused by `IllegalArgumentException: invalid len argument` while the launcher read the **stale remote** `$HOME/jenkins-agent/remoting.jar`. Removing that jar before a relaunch makes the copy succeed; the launcher recreates it.
+2. After the controller container restarted it could no longer reach the host at the Docker bridge address: `Connect timed out` / `No route to host`. With rootless Docker the container does not share the host network namespace, so bridge gateway addresses are not routable. The host's public address works because container egress is SNATed, so `agent-host` must contain that routable address.
+
+Recovery sequence (controller admin, no root required):
+
+```sh
+rm -f "$HOME/jenkins-agent/remoting.jar"
+curl -s -u "$ADMIN" -X POST "http://127.0.0.1:18080/computer/plane-game-cd-rootless/toggleOffline?offlineMessage="
+curl -s -u "$ADMIN" -X POST "http://127.0.0.1:18080/computer/plane-game-cd-rootless/launchSlaveAgent"
+```
+
+Never abort a running `main-cd` build: `promote.sh` records a rollback intent/completion, and the poller then quarantines the tuple as `rollback_unverifiable`, which is terminal. Produce a new `main` commit instead of re-driving the same tuple.
