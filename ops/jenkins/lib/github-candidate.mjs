@@ -6,6 +6,9 @@ const INTEGER_PATTERN = /^[1-9][0-9]*$/;
 const EXPECTED_WORKFLOW_ID = 407966338;
 const EXPECTED_WORKFLOW_PATH = '.github/workflows/checks.yml';
 const APPROVER = { login: 'Beginning-NEW', id: 183624934 };
+// GitHub writes the terminal deployment status a moment after the run's
+// `updated_at`, so deployment statuses get a short grace past the attempt window.
+const STATUS_GRACE_MS = 120 * 1000;
 
 function candidateError(code, message = code) {
   return Object.assign(new Error(message), { code });
@@ -104,8 +107,9 @@ function validateDeploymentStatus(statuses, deployment, window) {
   }
   const latest = statuses[0];
   const url = `https://api.github.com/repos/${githubPolicy.REPOSITORY}/deployments/${deployment.id}`;
+  const statusWindow = { startedMs: window.startedMs, completedMs: window.completedMs + STATUS_GRACE_MS };
   if (latest?.state !== 'success' || statuses.some((status) =>
-    status?.deployment_url !== url || withinAttempt(status?.created_at, window) === null)) {
+    status?.deployment_url !== url || withinAttempt(status?.created_at, statusWindow) === null)) {
     throw candidateError('deployment_status_rejected');
   }
   const chronological = [...statuses].reverse();
@@ -116,7 +120,7 @@ function validateDeploymentStatus(statuses, deployment, window) {
   for (const status of chronological) {
     if (states.length > 0 && states[states.length - 1] === status.state) continue;
     states.push(status.state);
-    times.push(withinAttempt(status.created_at, window));
+    times.push(withinAttempt(status.created_at, statusWindow));
   }
   if (!['waiting,in_progress,success', 'waiting,queued,in_progress,success'].includes(states.join(',')) ||
       times.some((time, index) => index > 0 && time < times[index - 1])) {
