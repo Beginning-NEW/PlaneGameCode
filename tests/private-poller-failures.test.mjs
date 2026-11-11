@@ -97,6 +97,32 @@ test('clock regression and unknown/uninitialized restart state never authorize a
   assert.equal(new SecureLedger(root, { now: () => NOW }).getState().budget.requests.length, 1);
 });
 
+test('a stale rate sample from an older window is ignored instead of failing the request', async (t) => {
+  const { ledger } = await fixture(t);
+  let remaining = '58';
+  let reset = String(Math.floor((NOW + 3600000) / 1000));
+  const client = new PublicGitHubClient({
+    ledger,
+    fetchImpl: async () => new Response('{}', {
+      status: 200,
+      headers: rateHeaders({ 'x-ratelimit-remaining': remaining, 'x-ratelimit-reset': reset }),
+    }),
+    now: () => NOW,
+  });
+
+  await client.get(DISCOVERY, { list: true, allowNotModified: true });
+  const observed = ledger.getState().rate;
+  assert.equal(observed.remaining, 58);
+
+  // An edge node still answering from the previous window reports fewer seconds
+  // until reset together with a higher remaining count.
+  remaining = '60';
+  reset = String(Math.floor((NOW + 1800000) / 1000));
+  await client.get(DISCOVERY, { list: true, allowNotModified: true });
+  assert.deepEqual(ledger.getState().rate, observed);
+  assert.equal(ledger.getState().clock.backoffUntilMs, 0);
+});
+
 test('Jenkins Basic auth exists only in the request header and credentials remain file-backed', async (t) => {
   const { parent } = await fixture(t);
   const directory = join(parent, 'credentials');
